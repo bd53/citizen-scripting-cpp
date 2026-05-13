@@ -49,26 +49,6 @@ static std::string GetResourcePath(IScriptHost* host)
     return path ? std::string(path) : std::string{};
 }
 
-static constexpr int64_t WATCHDOG_THRESHOLD_NS = 5'000'000'000LL; // 5 secs
-
-void Runtime::watchdogLoop()
-{
-    while (!m_watchdogStop.load(std::memory_order_relaxed))
-    {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        int64_t start = m_opStartNs.load(std::memory_order_relaxed);
-        if (start > 0)
-        {
-            auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-            if ((now - start) > WATCHDOG_THRESHOLD_NS)
-            {
-                double elapsed = static_cast<double>(now - start) / 1e9;
-                fprintf(stderr, "[citizen-scripting-cpp] WARNING: Resource '%s' has been executing for %.1fs - possible infinite loop or blocking call\n", m_resourceName.c_str(), elapsed);
-            }
-        }
-    }
-}
-
 Runtime::Runtime() : m_instanceId(static_cast<int32_t>(reinterpret_cast<intptr_t>(this) & 0x7FFFFFFF))
 {}
 
@@ -88,18 +68,11 @@ result_t OM_DECL Runtime::Create(IScriptHost* host)
         if (FX_SUCCEEDED(md->GetResourceName(&name)) && name)
             m_resourceName = name;
     }
-    h.As(&m_manifestHost);
-    m_watchdogStop.store(false, std::memory_order_relaxed);
-    m_watchdog = std::thread([this]() { watchdogLoop(); });
     return FX_S_OK;
 }
 
 result_t OM_DECL Runtime::Destroy()
 {
-    m_watchdogStop.store(true, std::memory_order_relaxed);
-    if (m_watchdog.joinable())
-        m_watchdog.join();
-
     if (m_bookmarkHost.GetRef())
     {
         m_bookmarkHost->RemoveBookmarks(static_cast<IScriptTickRuntimeWithBookmarks*>(this));
@@ -135,7 +108,6 @@ void OM_DECL Runtime::SetParentObject(void* obj)
 result_t OM_DECL Runtime::Tick()
 {
     if (!m_ctx || !m_ctx->hasPendingWork()) return FX_S_OK;
-    OpGuard opGuard(m_opStartNs);
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
     try
@@ -156,7 +128,6 @@ result_t OM_DECL Runtime::Tick()
 result_t OM_DECL Runtime::TickBookmarks(uint64_t* bookmarks, int32_t numBookmarks)
 {
     if (!m_ctx || numBookmarks <= 0) return FX_S_OK;
-    OpGuard opGuard(m_opStartNs);
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
     m_ctx->resumeBookmarks(bookmarks, numBookmarks);
@@ -166,7 +137,6 @@ result_t OM_DECL Runtime::TickBookmarks(uint64_t* bookmarks, int32_t numBookmark
 result_t OM_DECL Runtime::TriggerEvent(char* eventName, char* argsSerialized, uint32_t serializedSize, char* sourceId)
 {
     if (!m_ctx || !eventName) return FX_S_OK;
-    OpGuard opGuard(m_opStartNs);
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
     try
@@ -199,7 +169,6 @@ result_t OM_DECL Runtime::CallRef(int32_t refIdx, char* argsSerialized, uint32_t
 {
     auto it = m_refs.find(refIdx);
     if (it == m_refs.end()) return FX_E_INVALIDARG;
-    OpGuard opGuard(m_opStartNs);
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
     std::vector<char> result;
@@ -252,7 +221,7 @@ result_t OM_DECL Runtime::RequestMemoryUsage()
 result_t OM_DECL Runtime::GetMemoryUsage(int64_t* memUsage)
 {
     if (!memUsage) return FX_E_INVALIDARG;
-    *memUsage = m_ctx ? m_ctx->getMemoryUsage() : 0;
+    *memUsage = 0;
     return FX_S_OK;
 }
 
@@ -266,16 +235,14 @@ result_t OM_DECL Runtime::EmitWarning(char* channel, char* message)
     return FX_S_OK;
 }
 
-void OM_DECL Runtime::SetupFxProfiler(void* obj, int32_t resourceId)
+// @todo
+void OM_DECL Runtime::SetupFxProfiler(void*, int32_t)
 {
-    m_profiler = obj;
-    m_profilerId = resourceId;
 }
 
+// @todo
 void OM_DECL Runtime::ShutdownFxProfiler()
 {
-    m_profiler = nullptr;
-    m_profilerId = 0;
 }
 
 int32_t OM_DECL Runtime::HandlesFile(char* scriptFile, IScriptHostWithResourceData* /*metadata*/)
@@ -334,7 +301,6 @@ result_t OM_DECL Runtime::LoadFile(char* scriptFile)
         return FX_E_INVALIDARG;
     }
     auto* initFn = reinterpret_cast<void(*)(fx::ResourceContext*)>(dlsym(m_libHandle, "fxcpp_init"));
-    m_libPath = fullPath;
     m_tempLibPath = (loadPath != fullPath) ? loadPath : std::string{};
     if (!initFn)
     {

@@ -8,7 +8,7 @@ static std::string extractId(const std::string& source)
     return pos != std::string::npos ? source.substr(pos + 1) : source;
 }
 
-FXCPP_RESOURCE
+Server
 {
     auto pending = std::make_shared<std::unordered_map<std::string, std::string>>();
     auto players = std::make_shared<std::unordered_map<std::string, std::string>>();

@@ -5,7 +5,6 @@
 #include "Interop/MsgPackDeserializer.h"
 #include "../include/fxScripting.h"
 
-#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,7 +13,6 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
-#include <malloc.h> // malloc_usable_size
 
 #define FXCPP_RESOURCE_EXPORT __attribute__((visibility("default")))
 
@@ -92,8 +90,6 @@ public:
     std::string getResourceByIndex(int index);
 
     bool hasPendingWork() const { return !m_tickHandlers.empty() || !m_timers.empty(); }
-    int64_t getMemoryUsage() const { return m_memoryUsage.load(std::memory_order_relaxed); }
-    void trackAlloc(int64_t bytes) { m_memoryUsage.fetch_add(bytes, std::memory_order_relaxed); }
     void dispatchTick();
     void dispatchEvent(const std::string& name, const json::Value& args, const std::string& source);
     void dispatchCommand(const std::string& command, const std::string& source, const std::vector<std::string>& args);
@@ -160,7 +156,6 @@ private:
     std::unordered_map<uint64_t, std::pair<BookmarkHandle, std::shared_ptr<void>>> m_bookmarks;
     uint64_t m_nextBookmarkId = 1;
     std::unordered_map<int32_t, int32_t> m_stateBagHandlerRefs; // cookie -> refIdx
-    std::atomic<int64_t> m_memoryUsage{0};
 };
 
 namespace detail { inline ResourceContext* g_ctx = nullptr; }
@@ -176,7 +171,7 @@ inline ResourceContext* GetContext() { return detail::g_ctx; }
 #include "Impl/Statebags.inl"
 #include "Impl/Metadata.inl"
 
-#define FXCPP_RESOURCE \
+#define _FXCPP_ENTRY \
     static void _fxcpp_resource_body(fx::ResourceContext&); \
     extern "C" FXCPP_RESOURCE_EXPORT \
     void fxcpp_init(fx::ResourceContext* _ctx) \
@@ -186,44 +181,4 @@ inline ResourceContext* GetContext() { return detail::g_ctx; }
     } \
     static void _fxcpp_resource_body([[maybe_unused]] fx::ResourceContext& ctx)
 
-#ifdef FXCPP_RUNTIME
-#if defined(__GLIBC__)
-#define FX_ALLOC_ACTUAL_SIZE(p) malloc_usable_size(p)
-#else
-#define FX_ALLOC_ACTUAL_SIZE(p) 0
-#endif
-
-void* operator new(std::size_t size)
-{
-    void* p = std::malloc(size);
-    if (!p) throw std::bad_alloc();
-    if (auto* ctx = fx::detail::g_ctx)
-        ctx->trackAlloc(static_cast<int64_t>(size));
-    return p;
-}
-
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept
-{
-    void* p = std::malloc(size);
-    if (p)
-        if (auto* ctx = fx::detail::g_ctx)
-            ctx->trackAlloc(static_cast<int64_t>(size));
-    return p;
-}
-
-void operator delete(void* p) noexcept
-{
-    if (p)
-        if (auto* ctx = fx::detail::g_ctx)
-            ctx->trackAlloc(-static_cast<int64_t>(FX_ALLOC_ACTUAL_SIZE(p)));
-    std::free(p);
-}
-
-void operator delete(void* p, std::size_t size) noexcept
-{
-    if (p)
-        if (auto* ctx = fx::detail::g_ctx)
-            ctx->trackAlloc(-static_cast<int64_t>(size));
-    std::free(p);
-}
-#endif
+#define Server _FXCPP_ENTRY
