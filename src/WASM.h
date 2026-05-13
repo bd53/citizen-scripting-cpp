@@ -66,7 +66,7 @@ extern "C"
     void __fxcpp_remove_ref(int32_t ref_idx);
 
     __attribute__((import_module("fxcpp"), import_name("invoke_function_reference")))
-    int32_t __fxcpp_invoke_function_reference(const char* ref_str, uint32_t ref_len, const char* args, uint32_t args_len, char* result, int32_t result_max);
+    void __fxcpp_invoke_function_reference(const char* ref_str, uint32_t ref_len, const char* args, uint32_t args_len, void* out);
 
     __attribute__((import_module("fxcpp"), import_name("get_instance_id")))
     int32_t __fxcpp_get_instance_id();
@@ -169,6 +169,16 @@ struct Reader
             for(uint32_t i=0;i<n;++i) v.children.push_back(read(d+1)); return v; }
         case 0xDD:{ v.kind=Value::Kind::Array; uint32_t n=u32();
             for(uint32_t i=0;i<n;++i) v.children.push_back(read(d+1)); return v; }
+        // ext8/ext16/ext32
+        case 0xC7:{ uint32_t n=u8(); uint8_t t=u8();
+            if(t==10){ v.kind=Value::Kind::FuncRef; v.scalar=str(n); return v; }
+            p+=n; return {}; }
+        case 0xC8:{ uint32_t n=u16(); uint8_t t=u8();
+            if(t==10){ v.kind=Value::Kind::FuncRef; v.scalar=str(n); return v; }
+            p+=n; return {}; }
+        case 0xC9:{ uint32_t n=u32(); uint8_t t=u8();
+            if(t==10){ v.kind=Value::Kind::FuncRef; v.scalar=str(n); return v; }
+            p+=n; return {}; }
         // map16/map32
         case 0xDE: { uint32_t n=u16(); for(uint32_t i=0;i<n;++i){ read(d+1); read(d+1); } return {}; }
         case 0xDF: { uint32_t n=u32(); for(uint32_t i=0;i<n;++i){ read(d+1); read(d+1); } return {}; }
@@ -249,10 +259,15 @@ struct Writer
         }
         case Value::Kind::String: str(v.scalar); break;
         case Value::Kind::FuncRef:
-            mapHeader(1);
-            str("__cfx_functionReference");
-            str(v.scalar);
+        {
+            uint32_t n = (uint32_t)v.scalar.size();
+            if (n<=255) { pu8(0xC7); pu8((uint8_t)n); }
+            else if (n<=65535) { pu8(0xC8); pu16((uint16_t)n); }
+            else { pu8(0xC9); pu32(n); }
+            pu8(10); // function reference ext type
+            buf.insert(buf.end(), v.scalar.begin(), v.scalar.end());
             break;
+        }
         case Value::Kind::Array:
             arrayHeader(static_cast<uint32_t>(v.children.size()));
             for (auto& c : v.children) encValue(c);
@@ -694,10 +709,12 @@ namespace detail
 
     inline std::vector<uint8_t> invokeFunctionReference(const std::string& ref, const uint8_t* args, uint32_t argsLen)
     {
-        int32_t len = __fxcpp_invoke_function_reference(ref.c_str(), static_cast<uint32_t>(ref.size()), reinterpret_cast<const char*>(args), argsLen, nullptr, 0);
-        if (len <= 0) return {};
-        std::vector<uint8_t> result(static_cast<size_t>(len));
-        __fxcpp_invoke_function_reference(ref.c_str(), static_cast<uint32_t>(ref.size()), reinterpret_cast<const char*>(args), argsLen, reinterpret_cast<char*>(result.data()), len);
+        struct { uint32_t ptr; uint32_t len; } out{};
+        __fxcpp_invoke_function_reference(ref.c_str(), static_cast<uint32_t>(ref.size()), reinterpret_cast<const char*>(args), argsLen, &out);
+        if (!out.ptr || !out.len) return {};
+        auto* data = reinterpret_cast<uint8_t*>(out.ptr);
+        std::vector<uint8_t> result(data, data + out.len);
+        free(data);
         return result;
     }
 }

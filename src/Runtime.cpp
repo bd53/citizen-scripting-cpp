@@ -373,34 +373,41 @@ static wasm_trap_t* cb_remove_ref(void* env, wasmtime_caller_t*, const wasmtime_
     return nullptr;
 }
 
-static wasm_trap_t* cb_invoke_function_reference(void* env, wasmtime_caller_t* caller, const wasmtime_val_t* args, size_t, wasmtime_val_t* results, size_t)
+static wasm_trap_t* cb_invoke_function_reference(void* env, wasmtime_caller_t* caller, const wasmtime_val_t* args, size_t, wasmtime_val_t*, size_t)
 {
     auto* rt = static_cast<Runtime*>(env);
     auto* ctx = wasmtime_caller_context(caller);
     uint8_t* base; size_t sz;
-    if (!callerMemory(caller, ctx, &base, &sz)) { results[0] = i32val(0); return nullptr; }
+    if (!callerMemory(caller, ctx, &base, &sz)) return nullptr;
     uint32_t refPtr = static_cast<uint32_t>(args[0].of.i32);
     uint32_t refLen = static_cast<uint32_t>(args[1].of.i32);
     uint32_t argsPtr = static_cast<uint32_t>(args[2].of.i32);
     uint32_t argsLen = static_cast<uint32_t>(args[3].of.i32);
-    uint32_t resultPtr = static_cast<uint32_t>(args[4].of.i32);
-    int32_t resultMax = args[5].of.i32;
-    if (refPtr + refLen > sz || argsPtr + argsLen > sz) { results[0] = i32val(0); return nullptr; }
+    uint32_t outPtr = static_cast<uint32_t>(args[4].of.i32);
+    if (refPtr + refLen > sz || argsPtr + argsLen > sz || outPtr + 8 > sz) return nullptr;
     std::string refStr(reinterpret_cast<const char*>(base + refPtr), refLen);
     fx::OMPtr<IScriptBuffer> retBuf;
     rt->host()->InvokeFunctionReference(const_cast<char*>(refStr.c_str()), reinterpret_cast<char*>(base + argsPtr), argsLen, retBuf.ReleaseAndGetAddressOf());
-    int32_t actualLen = 0;
-    if (retBuf.GetRef())
+    uint32_t dataPtr = 0, dataLen = 0;
+    if (retBuf.GetRef() && retBuf->GetLength() > 0)
     {
-        actualLen = static_cast<int32_t>(retBuf->GetLength());
-        callerMemory(caller, ctx, &base, &sz);
-        if (resultMax > 0 && resultPtr + std::min<uint32_t>(actualLen, resultMax) <= sz)
+        dataLen = static_cast<uint32_t>(retBuf->GetLength());
+        dataPtr = rt->wasmAlloc(dataLen);
+        if (dataPtr)
         {
-            size_t copy = std::min<size_t>(static_cast<size_t>(actualLen), static_cast<size_t>(resultMax));
-            memcpy(base + resultPtr, retBuf->GetBytes(), copy);
+            callerMemory(caller, ctx, &base, &sz);
+            if (dataPtr + dataLen <= sz)
+                memcpy(base + dataPtr, retBuf->GetBytes(), dataLen);
         }
+        else
+            dataLen = 0;
     }
-    results[0] = i32val(actualLen);
+    callerMemory(caller, ctx, &base, &sz);
+    if (outPtr + 8 <= sz)
+    {
+        memcpy(base + outPtr, &dataPtr, 4);
+        memcpy(base + outPtr + 4, &dataLen, 4);
+    }
     return nullptr;
 }
 
@@ -780,7 +787,7 @@ void Runtime::defineImports()
     def("create_ref", makeFuncType({WASM_I32}, {WASM_I32}), cb_create_ref);
     def("canonicalize_ref", makeFuncType({WASM_I32, WASM_I32, WASM_I32}, {WASM_I32}), cb_canonicalize_ref);
     def("remove_ref", makeFuncType({WASM_I32}, {}), cb_remove_ref);
-    def("invoke_function_reference", makeFuncType({WASM_I32, WASM_I32, WASM_I32, WASM_I32, WASM_I32, WASM_I32}, {WASM_I32}), cb_invoke_function_reference);
+    def("invoke_function_reference", makeFuncType({WASM_I32, WASM_I32, WASM_I32, WASM_I32, WASM_I32}, {}), cb_invoke_function_reference);
     def("get_instance_id", makeFuncType({}, {WASM_I32}), cb_get_instance_id);
 }
 
