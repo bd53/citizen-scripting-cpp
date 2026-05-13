@@ -81,7 +81,7 @@ inline int32_t ResourceContext::addStateBagChangeHandler(const std::string& keyF
             bool replicated = args.at(4).asBool();
             handler(bagName, key, value, source, replicated);
         }
-        return { static_cast<char>(0xC0) }; // msgpack nil
+        return { static_cast<char>(0x90) }; // msgpack empty array
     });
 
     char* refString = nullptr;

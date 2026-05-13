@@ -9,14 +9,9 @@ inline void ResourceContext::on(const std::string& event, EventHandler h)
         invokeNative(HashString("REGISTER_RESOURCE_AS_EVENT_HANDLER"), reinterpret_cast<uintptr_t>(event.c_str()));
 }
 
-inline void ResourceContext::registerNetEvent(const std::string& event)
-{
-    m_netSafeEvents.insert(event);
-}
-
 inline void ResourceContext::onNet(const std::string& event, EventHandler h)
 {
-    registerNetEvent(event);
+    m_netSafeEvents.insert(event);
     on(event, std::move(h));
 }
 
@@ -44,7 +39,7 @@ inline void ResourceContext::onCommand(const std::string& command, CommandHandle
             for (size_t i = 0; i < args.at(1).size(); ++i)
                 cmdArgs.push_back(args.at(1).at(i).asStr());
         dispatchCommand(command, source, cmdArgs);
-        return { static_cast<char>(0xC0) };
+        return { static_cast<char>(0x90) };
     });
 
     char* refString = nullptr;
@@ -70,6 +65,8 @@ inline void ResourceContext::dispatchEvent(const std::string& name, const json::
         try { h(source, ea); }
         catch (const std::exception& e) { trace("Unhandled exception in event '%s': %s\n", name.c_str(), e.what()); }
         catch (...) { trace("Unhandled non-standard exception in event '%s'\n", name.c_str()); }
+        if (wasEventCanceled())
+            break;
     }
 }
 

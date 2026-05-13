@@ -14,15 +14,9 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
-#ifndef _WIN32
-#include <malloc.h>
-#endif
+#include <malloc.h> // malloc_usable_size
 
-#if defined(_WIN32)
-#define FXCPP_RESOURCE_EXPORT __declspec(dllexport)
-#else
 #define FXCPP_RESOURCE_EXPORT __attribute__((visibility("default")))
-#endif
 
 namespace fx
 {
@@ -39,7 +33,6 @@ public:
 
     // Events
     void on(const std::string& event, EventHandler h);
-    void registerNetEvent(const std::string& event);
     void onNet(const std::string& event, EventHandler h);
     void onTick(TickHandler h);
     void onCommand(const std::string& command, CommandHandler h);
@@ -60,13 +53,14 @@ public:
 
     // Exports
     void addExport(const std::string& name, ExportHandler handler);
-    json::Value callExport(const std::string& resource, const std::string& name, const std::vector<std::string>& args = {});
+    json::Value callExport(const std::string& resource, const std::string& name, std::initializer_list<json::Value> args = {});
 
     // Emit
     void trace(const char* fmt, ...);
-    void emit(const std::string& event, const std::vector<std::string>& rawArgs = {});
-    void emitNet(const std::string& event, int target, const std::vector<std::string>& rawArgs = {});
+    void emit(const std::string& event, std::initializer_list<json::Value> args = {});
+    void emitNet(const std::string& event, int target, std::initializer_list<json::Value> args = {});
     void cancelEvent();
+    bool wasEventCanceled();
 
     // Statebags
     void setStateBagValue(const std::string& bagName, const std::string& key, const json::Value& value, bool replicated = true);
@@ -193,6 +187,12 @@ inline ResourceContext* GetContext() { return detail::g_ctx; }
     static void _fxcpp_resource_body([[maybe_unused]] fx::ResourceContext& ctx)
 
 #ifdef FXCPP_RUNTIME
+#if defined(__GLIBC__)
+#define FX_ALLOC_ACTUAL_SIZE(p) malloc_usable_size(p)
+#else
+#define FX_ALLOC_ACTUAL_SIZE(p) 0
+#endif
+
 void* operator new(std::size_t size)
 {
     void* p = std::malloc(size);
@@ -215,11 +215,7 @@ void operator delete(void* p) noexcept
 {
     if (p)
         if (auto* ctx = fx::detail::g_ctx)
-        {
-#if defined(__GLIBC__)
-            ctx->trackAlloc(-static_cast<int64_t>(malloc_usable_size(p)));
-#endif
-        }
+            ctx->trackAlloc(-static_cast<int64_t>(FX_ALLOC_ACTUAL_SIZE(p)));
     std::free(p);
 }
 

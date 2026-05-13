@@ -43,7 +43,7 @@ inline void ResourceContext::addExport(const std::string& name, ExportHandler ha
     });
 }
 
-inline json::Value ResourceContext::callExport(const std::string& resource, const std::string& name, const std::vector<std::string>& args)
+inline json::Value ResourceContext::callExport(const std::string& resource, const std::string& name, std::initializer_list<json::Value> args)
 {
     if (!m_addRef) return {};
 
@@ -54,7 +54,7 @@ inline json::Value ResourceContext::callExport(const std::string& resource, cons
             *capturedRef = decoded.scalar;
         else if (decoded.kind == json::Value::Kind::Array && decoded.size() > 0 && decoded.at(0).kind == json::Value::Kind::FuncRef)
             *capturedRef = decoded.at(0).scalar;
-        return { static_cast<char>(0xC0) };
+        return { static_cast<char>(0x90) };
     });
 
     char* setterRefStr = nullptr;
@@ -72,16 +72,34 @@ inline json::Value ResourceContext::callExport(const std::string& resource, cons
     auto setterPayload = msgpack::encode(setterArr);
 
     std::string eventName = "__cfx_export_" + resource + "_" + name;
-    invokeNative(HashString("TRIGGER_EVENT_INTERNAL"), reinterpret_cast<uintptr_t>(eventName.c_str()), reinterpret_cast<uintptr_t>(setterPayload.data()), setterPayload.size());
+    try
+    {
+        invokeNative(HashString("TRIGGER_EVENT_INTERNAL"), reinterpret_cast<uintptr_t>(eventName.c_str()), reinterpret_cast<uintptr_t>(setterPayload.data()), setterPayload.size());
+    }
+    catch (...)
+    {
+        if (m_removeRef) m_removeRef(setterIdx);
+        trace("callExport: exception resolving export '%s' from resource '%s'\n", name.c_str(), resource.c_str());
+        return {};
+    }
 
     if (m_removeRef) m_removeRef(setterIdx);
 
     if (capturedRef->empty()) return {};
-    auto userPayload = msgpack::encodeArgs(args);
+    json::Value argArr;
+    argArr.kind = json::Value::Kind::Array;
+    argArr.children.assign(args.begin(), args.end());
+    auto userPayload = msgpack::encode(argArr);
     fx::OMPtr<IScriptBuffer> retBuf;
+    try
     {
         PushEnvironment env(m_handler.GetRef(), m_runtime);
         m_host->InvokeFunctionReference(const_cast<char*>(capturedRef->c_str()), reinterpret_cast<char*>(userPayload.data()), static_cast<uint32_t>(userPayload.size()), retBuf.ReleaseAndGetAddressOf());
+    }
+    catch (...)
+    {
+        trace("callExport: exception invoking export '%s' from resource '%s'\n", name.c_str(), resource.c_str());
+        return {};
     }
     if (!retBuf.GetRef()) return {};
     json::Value result = msgpack::decode(retBuf->GetBytes(), retBuf->GetLength());

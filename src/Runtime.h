@@ -10,6 +10,9 @@
 #include <string>
 #include <unordered_map>
 #include <functional>
+#include <thread>
+#include <atomic>
+#include <chrono>
 
 FX_DEFINE_GUID(CLSID_Runtime, 0xF3A7B9, 0x241D, 0x5E4C, 0x8A, 0x93, 0x2F, 0xA1, 0xB2, 0xC3, 0xD4, 0xE5);
 
@@ -39,6 +42,20 @@ public:
     }
     BoundaryGuard(const BoundaryGuard&) = delete;
     BoundaryGuard& operator=(const BoundaryGuard&) = delete;
+};
+
+class OpGuard
+{
+    std::atomic<int64_t>& m_ref;
+public:
+    OpGuard(std::atomic<int64_t>& ref) : m_ref(ref)
+    {
+        auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        m_ref.store(now, std::memory_order_relaxed);
+    }
+    ~OpGuard() { m_ref.store(0, std::memory_order_relaxed); }
+    OpGuard(const OpGuard&) = delete;
+    OpGuard& operator=(const OpGuard&) = delete;
 };
 
 class Runtime final : public fx::OMClass<Runtime, IScriptRuntime, IScriptTickRuntime, IScriptEventRuntime, IScriptRefRuntime, IScriptFileHandlingRuntime, IScriptTickRuntimeWithBookmarks, IScriptStackWalkingRuntime, IScriptMemInfoRuntime, IScriptWarningRuntime, IScriptProfiler>
@@ -83,4 +100,9 @@ private:
     int64_t m_nextBoundaryId = 1;
     void* m_profiler = nullptr;
     int32_t m_profilerId = 0;
+    std::string m_tempLibPath;
+    std::atomic<int64_t> m_opStartNs{0};
+    std::atomic<bool> m_watchdogStop{false};
+    std::thread m_watchdog;
+    void watchdogLoop();
 };

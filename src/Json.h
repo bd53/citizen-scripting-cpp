@@ -117,6 +117,15 @@ struct Value
     std::string scalar;
     std::vector<Value> children;
     std::unordered_map<std::string, Value> fields;
+
+    Value() = default;
+    Value(int v) : kind(Kind::Number), scalar(std::to_string(v)) {}
+    Value(int64_t v) : kind(Kind::Number), scalar(std::to_string(v)) {}
+    Value(double v) : kind(Kind::Number) { char buf[32]; snprintf(buf, sizeof(buf), "%g", v); scalar = buf; }
+    Value(float v) : kind(Kind::Number) { char buf[32]; snprintf(buf, sizeof(buf), "%g", static_cast<double>(v)); scalar = buf; }
+    Value(bool b) : kind(Kind::Bool), scalar(b ? "true" : "false") {}
+    Value(const char* s) : kind(s ? Kind::String : Kind::Null), scalar(s ? s : "") {}
+    Value(std::string s) : kind(Kind::String), scalar(std::move(s)) {}
     std::string asStr(std::string_view def = "") const
     {
         return kind == Kind::String ? scalar : std::string(def);

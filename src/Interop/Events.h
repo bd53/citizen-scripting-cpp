@@ -11,12 +11,6 @@ inline void on(const std::string& event, EventHandler handler)
         ctx->on(event, std::move(handler));
 }
 
-inline void registerNetEvent(const std::string& event)
-{
-    if (auto* ctx = detail::g_ctx)
-        ctx->registerNetEvent(event);
-}
-
 inline void onNet(const std::string& event, EventHandler handler)
 {
     if (auto* ctx = detail::g_ctx)
@@ -48,22 +42,29 @@ inline void trace(const char* fmt, TArgs&&... args)
         ctx->trace(fmt, std::forward<TArgs>(args)...);
 }
 
-inline void emit(const std::string& event, const std::vector<std::string>& rawArgs = {})
+inline void emit(const std::string& event, std::initializer_list<json::Value> args = {})
 {
     if (auto* ctx = detail::g_ctx)
-        ctx->emit(event, rawArgs);
+        ctx->emit(event, args);
 }
 
-inline void emitNet(const std::string& event, int target, const std::vector<std::string>& rawArgs = {})
+inline void emitNet(const std::string& event, int target, std::initializer_list<json::Value> args = {})
 {
     if (auto* ctx = detail::g_ctx)
-        ctx->emitNet(event, target, rawArgs);
+        ctx->emitNet(event, target, args);
 }
 
 inline void cancelEvent()
 {
     if (auto* ctx = detail::g_ctx)
         ctx->cancelEvent();
+}
+
+inline bool wasEventCanceled()
+{
+    if (auto* ctx = detail::g_ctx)
+        return ctx->wasEventCanceled();
+    return false;
 }
 
 }

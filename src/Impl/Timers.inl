@@ -45,11 +45,18 @@ inline void ResourceContext::dispatchTick()
         }
         else
             m_timers.erase(it);
-        cb();
+        try { cb(); }
+        catch (const std::exception& e) { trace("Unhandled exception in timer %d: %s\n", id, e.what()); }
+        catch (...) { trace("Unhandled non-standard exception in timer %d\n", id); }
     }
 
     auto tickHandlers = m_tickHandlers;
-    for (auto& h : tickHandlers) h();
+    for (auto& h : tickHandlers)
+    {
+        try { h(); }
+        catch (const std::exception& e) { trace("Unhandled exception in tick handler: %s\n", e.what()); }
+        catch (...) { trace("Unhandled non-standard exception in tick handler\n"); }
+    }
 }
 
 }

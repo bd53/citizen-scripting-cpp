@@ -6,19 +6,29 @@
 #include <string>
 #include <string_view>
 
-#ifndef _WIN32
 #include <dlfcn.h>
-#include <cxxabi.h>
-#if __has_include(<execinfo.h>)
-#include <execinfo.h>
-#define HAS_EXECINFO 1
-#endif
-#else
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <dbghelp.h>
-#pragma comment(lib, "dbghelp.lib")
-#endif
+#include <unistd.h>
+
+static std::atomic<uint32_t> s_tempCounter{0};
+
+static bool CopyFileTo(const std::string& src, const std::string& dst)
+{
+    FILE* in = fopen(src.c_str(), "rb");
+    if (!in) return false;
+    FILE* out = fopen(dst.c_str(), "wb");
+    if (!out) { fclose(in); return false; }
+    char buf[8192];
+    size_t n;
+    bool ok = true;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+    {
+        if (fwrite(buf, 1, n, out) != n) { ok = false; break; }
+    }
+    fclose(in);
+    fclose(out);
+    if (!ok) std::remove(dst.c_str());
+    return ok;
+}
 
 static std::string GetResourcePath(IScriptHost* host)
 {
@@ -37,6 +47,26 @@ static std::string GetResourcePath(IScriptHost* host)
     host->InvokeNative(ctx);
     const char* path = reinterpret_cast<const char*>(ctx.arguments[0]);
     return path ? std::string(path) : std::string{};
+}
+
+static constexpr int64_t WATCHDOG_THRESHOLD_NS = 5'000'000'000LL; // 5 secs
+
+void Runtime::watchdogLoop()
+{
+    while (!m_watchdogStop.load(std::memory_order_relaxed))
+    {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        int64_t start = m_opStartNs.load(std::memory_order_relaxed);
+        if (start > 0)
+        {
+            auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+            if ((now - start) > WATCHDOG_THRESHOLD_NS)
+            {
+                double elapsed = static_cast<double>(now - start) / 1e9;
+                fprintf(stderr, "[citizen-scripting-cpp] WARNING: Resource '%s' has been executing for %.1fs - possible infinite loop or blocking call\n", m_resourceName.c_str(), elapsed);
+            }
+        }
+    }
 }
 
 Runtime::Runtime() : m_instanceId(static_cast<int32_t>(reinterpret_cast<intptr_t>(this) & 0x7FFFFFFF))
@@ -59,11 +89,17 @@ result_t OM_DECL Runtime::Create(IScriptHost* host)
             m_resourceName = name;
     }
     h.As(&m_manifestHost);
+    m_watchdogStop.store(false, std::memory_order_relaxed);
+    m_watchdog = std::thread([this]() { watchdogLoop(); });
     return FX_S_OK;
 }
 
 result_t OM_DECL Runtime::Destroy()
 {
+    m_watchdogStop.store(true, std::memory_order_relaxed);
+    if (m_watchdog.joinable())
+        m_watchdog.join();
+
     if (m_bookmarkHost.GetRef())
     {
         m_bookmarkHost->RemoveBookmarks(static_cast<IScriptTickRuntimeWithBookmarks*>(this));
@@ -81,11 +117,12 @@ result_t OM_DECL Runtime::Destroy()
         m_ctx = nullptr;
     }
     m_refs.clear();
-#ifndef _WIN32
     if (m_libHandle) { dlclose(m_libHandle); m_libHandle = nullptr; }
-#else
-    if (m_libHandle) { FreeLibrary(static_cast<HMODULE>(m_libHandle)); m_libHandle = nullptr; }
-#endif
+    if (!m_tempLibPath.empty())
+    {
+        std::remove(m_tempLibPath.c_str());
+        m_tempLibPath.clear();
+    }
     m_host = nullptr;
     return FX_S_OK;
 }
@@ -98,6 +135,7 @@ void OM_DECL Runtime::SetParentObject(void* obj)
 result_t OM_DECL Runtime::Tick()
 {
     if (!m_ctx || !m_ctx->hasPendingWork()) return FX_S_OK;
+    OpGuard opGuard(m_opStartNs);
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
     try
@@ -118,6 +156,7 @@ result_t OM_DECL Runtime::Tick()
 result_t OM_DECL Runtime::TickBookmarks(uint64_t* bookmarks, int32_t numBookmarks)
 {
     if (!m_ctx || numBookmarks <= 0) return FX_S_OK;
+    OpGuard opGuard(m_opStartNs);
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
     m_ctx->resumeBookmarks(bookmarks, numBookmarks);
@@ -127,6 +166,7 @@ result_t OM_DECL Runtime::TickBookmarks(uint64_t* bookmarks, int32_t numBookmark
 result_t OM_DECL Runtime::TriggerEvent(char* eventName, char* argsSerialized, uint32_t serializedSize, char* sourceId)
 {
     if (!m_ctx || !eventName) return FX_S_OK;
+    OpGuard opGuard(m_opStartNs);
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
     try
@@ -159,6 +199,7 @@ result_t OM_DECL Runtime::CallRef(int32_t refIdx, char* argsSerialized, uint32_t
 {
     auto it = m_refs.find(refIdx);
     if (it == m_refs.end()) return FX_E_INVALIDARG;
+    OpGuard opGuard(m_opStartNs);
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
     std::vector<char> result;
@@ -170,13 +211,13 @@ result_t OM_DECL Runtime::CallRef(int32_t refIdx, char* argsSerialized, uint32_t
     {
         if (m_ctx)
             m_ctx->trace("Unhandled exception in ref %d: %s\n", refIdx, e.what());
-        result = { static_cast<char>(0xC0) }; // msgpack nil
+        result = { static_cast<char>(0x90) }; // msgpack empty array
     }
     catch (...)
     {
         if (m_ctx)
             m_ctx->trace("Unhandled non-standard exception in ref %d\n", refIdx);
-        result = { static_cast<char>(0xC0) };
+        result = { static_cast<char>(0x90) };
     }
     auto buf = fx::MakeNew<ScriptBuffer>(std::move(result));
     return buf->QueryInterface(IScriptBuffer::GetIID(), reinterpret_cast<void**>(retval));
@@ -198,89 +239,8 @@ result_t OM_DECL Runtime::RemoveRef(int32_t refIdx)
     return FX_S_OK;
 }
 
-static void SubmitFrame(IScriptStackWalkVisitor* visitor, const std::string& resource, const std::string& func, const std::string& file, int line)
-{
-    fx::json::Value frame;
-    frame.kind = fx::json::Value::Kind::Array;
-    frame.children.push_back(fx::json::makeString(resource));
-    frame.children.push_back(fx::json::makeString(func));
-    frame.children.push_back(fx::json::makeString(file));
-    frame.children.push_back(fx::json::makeInt(line));
-    auto encoded = fx::msgpack::encode(frame);
-    visitor->SubmitStackFrame(reinterpret_cast<char*>(encoded.data()), static_cast<uint32_t>(encoded.size()));
-}
-
 result_t OM_DECL Runtime::WalkStack(char* boundaryStart, uint32_t boundaryStartLength, char* boundaryEnd, uint32_t boundaryEndLength, IScriptStackWalkVisitor* visitor)
 {
-    if (!visitor) return FX_S_OK;
-
-    bool submitted = false;
-
-#if defined(HAS_EXECINFO)
-    void* frames[64];
-    int count = backtrace(frames, 64);
-
-    for (int i = 0; i < count; ++i)
-    {
-        Dl_info info{};
-        if (!dladdr(frames[i], &info) || !info.dli_sname)
-            continue;
-
-        if (!info.dli_fname || m_libPath.empty() || m_libPath != info.dli_fname)
-            continue;
-
-        std::string funcName;
-        int status = 0;
-        char* demangled = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
-        if (status == 0 && demangled)
-        {
-            funcName = demangled;
-            free(demangled);
-        }
-        else
-        {
-            funcName = info.dli_sname;
-        }
-
-        SubmitFrame(visitor, m_resourceName, funcName, info.dli_fname, 0);
-        submitted = true;
-    }
-#elif defined(_WIN32)
-    void* frames[64];
-    USHORT count = CaptureStackBackTrace(0, 64, frames, nullptr);
-
-    static bool symInit = false;
-    if (!symInit)
-    {
-        SymInitialize(GetCurrentProcess(), nullptr, TRUE);
-        symInit = true;
-    }
-
-    HMODULE libMod = static_cast<HMODULE>(m_libHandle);
-    for (USHORT i = 0; i < count; ++i)
-    {
-        HMODULE mod = nullptr;
-        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCSTR>(frames[i]), &mod);
-        if (mod != libMod)
-            continue;
-
-        alignas(SYMBOL_INFO) char buf[sizeof(SYMBOL_INFO) + 256];
-        auto* sym = reinterpret_cast<SYMBOL_INFO*>(buf);
-        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-        sym->MaxNameLen = 256;
-
-        std::string funcName = "unknown";
-        if (SymFromAddr(GetCurrentProcess(), reinterpret_cast<DWORD64>(frames[i]), nullptr, sym))
-            funcName = sym->Name;
-
-        SubmitFrame(visitor, m_resourceName, funcName, m_libPath, 0);
-        submitted = true;
-    }
-#endif
-
-    if (!submitted)
-        SubmitFrame(visitor, m_resourceName, "native", "", 0);
-
     return FX_S_OK;
 }
 
@@ -322,11 +282,7 @@ int32_t OM_DECL Runtime::HandlesFile(char* scriptFile, IScriptHostWithResourceDa
 {
     if (!scriptFile) return 0;
     std::string_view file(scriptFile);
-#ifdef _WIN32
-    return file.ends_with(".dll") ? 1 : 0;
-#else
     return file.ends_with(".so") ? 1 : 0;
-#endif
 }
 
 result_t OM_DECL Runtime::LoadFile(char* scriptFile)
@@ -355,26 +311,31 @@ result_t OM_DECL Runtime::LoadFile(char* scriptFile)
         }
     }
 
-#ifdef _WIN32
-    std::string fullPath = root + "\\" + scriptFile;
-    m_libHandle = LoadLibraryA(fullPath.c_str());
-    if (!m_libHandle)
-    {
-        fprintf(stderr, "[citizen-scripting-cpp] LoadLibraryA failed for '%s': error %lu\n", fullPath.c_str(), GetLastError());
-        return FX_E_INVALIDARG;
-    }
-    auto* initFn = reinterpret_cast<void(*)(fx::ResourceContext*)>(GetProcAddress(static_cast<HMODULE>(m_libHandle), "fxcpp_init"));
-#else
     std::string fullPath = root + "/" + scriptFile;
-    m_libHandle = dlopen(fullPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+    uint32_t seq = s_tempCounter.fetch_add(1, std::memory_order_relaxed);
+    std::string loadPath;
+    {
+        std::string tmpDir = "/tmp";
+        std::string baseName = m_resourceName + "_" + std::string(scriptFile);
+        for (auto& c : baseName) { if (c == '/' || c == '\\') c = '_'; }
+        loadPath = tmpDir + "/" + baseName + ".rt." + std::to_string(getpid()) + "." + std::to_string(seq);
+    }
+    if (!CopyFileTo(fullPath, loadPath))
+    {
+        fprintf(stderr, "[citizen-scripting-cpp] Failed to copy '%s' to temp path '%s', loading original\n", fullPath.c_str(), loadPath.c_str());
+        loadPath = fullPath;
+    }
+
+    m_libHandle = dlopen(loadPath.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!m_libHandle)
     {
-        fprintf(stderr, "[citizen-scripting-cpp] dlopen failed for '%s': %s\n", fullPath.c_str(), dlerror());
+        fprintf(stderr, "[citizen-scripting-cpp] dlopen failed for '%s': %s\n", loadPath.c_str(), dlerror());
+        if (loadPath != fullPath) std::remove(loadPath.c_str());
         return FX_E_INVALIDARG;
     }
     auto* initFn = reinterpret_cast<void(*)(fx::ResourceContext*)>(dlsym(m_libHandle, "fxcpp_init"));
-#endif
     m_libPath = fullPath;
+    m_tempLibPath = (loadPath != fullPath) ? loadPath : std::string{};
     if (!initFn)
     {
         fprintf(stderr, "[citizen-scripting-cpp] '%s' has no fxcpp_init export\n", fullPath.c_str());
@@ -417,11 +378,8 @@ result_t OM_DECL Runtime::LoadFile(char* scriptFile)
         }
         m_ctx->cleanupBookmarks();
         delete m_ctx; m_ctx = nullptr;
-#ifndef _WIN32
         if (m_libHandle) { dlclose(m_libHandle); m_libHandle = nullptr; }
-#else
-        if (m_libHandle) { FreeLibrary(static_cast<HMODULE>(m_libHandle)); m_libHandle = nullptr; }
-#endif
+        if (!m_tempLibPath.empty()) { std::remove(m_tempLibPath.c_str()); m_tempLibPath.clear(); }
         return FX_E_INVALIDARG;
     }
     catch (...)
@@ -434,11 +392,8 @@ result_t OM_DECL Runtime::LoadFile(char* scriptFile)
         }
         m_ctx->cleanupBookmarks();
         delete m_ctx; m_ctx = nullptr;
-#ifndef _WIN32
         if (m_libHandle) { dlclose(m_libHandle); m_libHandle = nullptr; }
-#else
-        if (m_libHandle) { FreeLibrary(static_cast<HMODULE>(m_libHandle)); m_libHandle = nullptr; }
-#endif
+        if (!m_tempLibPath.empty()) { std::remove(m_tempLibPath.c_str()); m_tempLibPath.clear(); }
         return FX_E_INVALIDARG;
     }
     return FX_S_OK;
