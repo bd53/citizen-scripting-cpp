@@ -20,7 +20,7 @@ struct Vector3
 class EventArgs
 {
 public:
-    explicit EventArgs(const json::Value& arr) : m_arr(arr) {}
+    explicit EventArgs(json::Value arr) : m_arr(std::move(arr)) {}
     size_t size() const { return m_arr.size(); }
     template<typename T> T get(size_t i) const;
     std::string str (size_t i) const { return m_arr.at(i).asStr(); }
@@ -35,7 +35,7 @@ public:
     }
 
 private:
-    const json::Value& m_arr;
+    json::Value m_arr;
 };
 
 template<> inline std::string EventArgs::get<std::string>(size_t i) const { return str(i); }

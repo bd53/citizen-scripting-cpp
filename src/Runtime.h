@@ -13,8 +13,6 @@
 
 FX_DEFINE_GUID(CLSID_Runtime, 0xF3A7B9, 0x241D, 0x5E4C, 0x8A, 0x93, 0x2F, 0xA1, 0xB2, 0xC3, 0xD4, 0xE5);
 
-using RefCallback = std::function<std::vector<char>(const char* argsSerialized, uint32_t argsSize)>;
-
 struct CppBoundary
 {
     int64_t hint;
@@ -65,7 +63,7 @@ public:
     result_t OM_DECL EmitWarning(char* channel, char* message) override;
     void OM_DECL SetupFxProfiler(void* obj, int32_t resourceId) override;
     void OM_DECL ShutdownFxProfiler() override;
-    int32_t AddFuncRef(RefCallback cb);
+    int32_t AddFuncRef(fx::RefCallback cb);
 
 private:
     IScriptHost* m_host = nullptr;
@@ -75,7 +73,7 @@ private:
     void* m_libHandle = nullptr;
     fx::ResourceContext* m_ctx = nullptr;
     std::string m_resourceName;
-    std::unordered_map<int32_t, RefCallback> m_refs;
+    std::unordered_map<int32_t, fx::RefCallback> m_refs;
     int32_t m_nextRefIdx = 1;
     int64_t m_nextBoundaryId = 1;
     std::string m_tempLibPath;

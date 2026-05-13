@@ -58,7 +58,8 @@ struct Reader
 
     void validateCount(uint32_t n) const
     {
-        if (n > static_cast<uint32_t>(end - p))
+        constexpr uint32_t MAX_ELEMENTS = 1 << 20;
+        if (n > MAX_ELEMENTS || n > static_cast<uint32_t>(end - p))
             throw std::runtime_error("msgpack: element count exceeds remaining data");
     }
 
@@ -77,7 +78,12 @@ struct Reader
         validateCount(n);
         json::Value v;
         v.kind = json::Value::Kind::Object;
-        for (uint32_t i = 0; i < n; ++i) { std::string key = read().scalar; v.fields[key] = read(); }
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            json::Value keyVal = read();
+            std::string key = keyVal.kind == json::Value::Kind::String ? keyVal.scalar : std::to_string(i);
+            v.fields[key] = read();
+        }
         return v;
     }
 

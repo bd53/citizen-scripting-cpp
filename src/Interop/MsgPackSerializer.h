@@ -196,22 +196,4 @@ inline std::vector<uint8_t> encode(const json::Value& v)
     return buf;
 }
 
-inline std::vector<uint8_t> encodeArgs(const std::vector<std::string>& rawJsonArgs)
-{
-    json::Value arr;
-    arr.kind = json::Value::Kind::Array;
-    arr.children.reserve(rawJsonArgs.size());
-    for (const auto& s : rawJsonArgs)
-    {
-        try { arr.children.push_back(json::parse(s)); }
-        catch (...) {
-            json::Value sv;
-            sv.kind = json::Value::Kind::String;
-            sv.scalar = s;
-            arr.children.push_back(sv);
-        }
-    }
-    return encode(arr);
-}
-
 }

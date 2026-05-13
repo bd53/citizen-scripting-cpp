@@ -44,7 +44,7 @@ inline void ResourceContext::onCommand(const std::string& command, CommandHandle
 
     char* refString = nullptr;
     m_host->CanonicalizeRef(refIdx, m_runtime->GetInstanceId(), &refString);
-    if (!refString) return;
+    if (!refString) { if (m_removeRef) m_removeRef(refIdx); return; }
     invokeNative(HashString("REGISTER_COMMAND"), reinterpret_cast<uintptr_t>(command.c_str()), reinterpret_cast<uintptr_t>(refString), uintptr_t(0));
     fwFree(refString);
 }

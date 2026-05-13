@@ -19,7 +19,7 @@ inline void ResourceContext::addExport(const std::string& name, ExportHandler ha
 
     char* refString = nullptr;
     m_host->CanonicalizeRef(refIdx, m_runtime->GetInstanceId(), &refString);
-    if (!refString) return;
+    if (!refString) { if (m_removeRef) m_removeRef(refIdx); return; }
     std::string exportRef = refString;
     fwFree(refString);
 

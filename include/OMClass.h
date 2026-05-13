@@ -63,9 +63,9 @@ public:
         {
             this->~OMClass();
             fwFree(this);
-            return 1;
+            return 0;
         }
-        return 0;
+        return static_cast<uint32_t>(c);
     }
 
     fxIBase* GetBaseRef()

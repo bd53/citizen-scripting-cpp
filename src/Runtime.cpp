@@ -8,6 +8,7 @@
 
 #include <dlfcn.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 static std::atomic<uint32_t> s_tempCounter{0};
 
@@ -15,8 +16,10 @@ static bool CopyFileTo(const std::string& src, const std::string& dst)
 {
     FILE* in = fopen(src.c_str(), "rb");
     if (!in) return false;
-    FILE* out = fopen(dst.c_str(), "wb");
-    if (!out) { fclose(in); return false; }
+    int fd = open(dst.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0700);
+    if (fd < 0) { fclose(in); return false; }
+    FILE* out = fdopen(fd, "wb");
+    if (!out) { close(fd); fclose(in); return false; }
     char buf[8192];
     size_t n;
     bool ok = true;
@@ -110,6 +113,7 @@ result_t OM_DECL Runtime::Tick()
     if (!m_ctx || !m_ctx->hasPendingWork()) return FX_S_OK;
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
+    if (m_nextBoundaryId <= 0) m_nextBoundaryId = 1;
     try
     {
         m_ctx->dispatchTick();
@@ -130,6 +134,7 @@ result_t OM_DECL Runtime::TickBookmarks(uint64_t* bookmarks, int32_t numBookmark
     if (!m_ctx || numBookmarks <= 0) return FX_S_OK;
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
+    if (m_nextBoundaryId <= 0) m_nextBoundaryId = 1;
     m_ctx->resumeBookmarks(bookmarks, numBookmarks);
     return FX_S_OK;
 }
@@ -139,6 +144,7 @@ result_t OM_DECL Runtime::TriggerEvent(char* eventName, char* argsSerialized, ui
     if (!m_ctx || !eventName) return FX_S_OK;
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
+    if (m_nextBoundaryId <= 0) m_nextBoundaryId = 1;
     try
     {
         fx::json::Value args = fx::msgpack::decode(argsSerialized, serializedSize);
@@ -157,7 +163,7 @@ result_t OM_DECL Runtime::TriggerEvent(char* eventName, char* argsSerialized, ui
     return FX_S_OK;
 }
 
-int32_t Runtime::AddFuncRef(RefCallback cb)
+int32_t Runtime::AddFuncRef(fx::RefCallback cb)
 {
     int32_t idx = m_nextRefIdx++;
     if (m_nextRefIdx <= 0) m_nextRefIdx = 1;
@@ -171,6 +177,7 @@ result_t OM_DECL Runtime::CallRef(int32_t refIdx, char* argsSerialized, uint32_t
     if (it == m_refs.end()) return FX_E_INVALIDARG;
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     BoundaryGuard boundary(m_host, m_nextBoundaryId++);
+    if (m_nextBoundaryId <= 0) m_nextBoundaryId = 1;
     std::vector<char> result;
     try
     {
@@ -264,7 +271,7 @@ result_t OM_DECL Runtime::LoadFile(char* scriptFile)
         return FX_E_INVALIDARG;
     }
     std::string_view scriptFileView(scriptFile);
-    if (scriptFileView.find("..") != std::string_view::npos)
+    if (scriptFileView.find("/..") != std::string_view::npos || scriptFileView.find("../") != std::string_view::npos || scriptFileView == "..")
     {
         fprintf(stderr, "[citizen-scripting-cpp] Rejected script path with '..': '%s'\n", scriptFile);
         return FX_E_INVALIDARG;
@@ -326,7 +333,7 @@ result_t OM_DECL Runtime::LoadFile(char* scriptFile)
                 m_bookmarkHost->ScheduleBookmark(static_cast<IScriptTickRuntimeWithBookmarks*>(this), bm, deadline);
         };
     }
-    m_ctx = new fx::ResourceContext(m_host, this, m_resourceName, runtimeHandler.GetRef(), [this](RefCallback cb) -> int32_t { return AddFuncRef(std::move(cb)); }, [this](int32_t idx) { m_refs.erase(idx); }, std::move(schedBookmark));
+    m_ctx = new fx::ResourceContext(m_host, this, m_resourceName, runtimeHandler.GetRef(), [this](fx::RefCallback cb) -> int32_t { return AddFuncRef(std::move(cb)); }, [this](int32_t idx) { m_refs.erase(idx); }, std::move(schedBookmark));
     fprintf(stderr, "[citizen-scripting-cpp] Loaded C++ resource '%s'\n", m_resourceName.c_str());
     fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
     try

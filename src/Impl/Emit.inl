@@ -3,13 +3,18 @@ namespace fx
 
 inline void ResourceContext::trace(const char* fmt, ...)
 {
-    char buf[4096];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_list ap2;
+    va_copy(ap2, ap);
+    int len = vsnprintf(nullptr, 0, fmt, ap);
     va_end(ap);
-    m_host->ScriptTrace(buf);
-    fprintf(stderr, "[script:%s] %s", m_name.c_str(), buf);
+    if (len <= 0) { va_end(ap2); return; }
+    std::string buf(static_cast<size_t>(len), '\0');
+    vsnprintf(buf.data(), buf.size() + 1, fmt, ap2);
+    va_end(ap2);
+    m_host->ScriptTrace(buf.data());
+    fprintf(stderr, "[script:%s] %s", m_name.c_str(), buf.c_str());
 }
 
 inline void ResourceContext::emit(const std::string& event, std::initializer_list<json::Value> args)

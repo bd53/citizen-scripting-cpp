@@ -15,7 +15,7 @@ public:
     OMPtr() = default;
     ~OMPtr()
     {
-        if (m_ref && m_ref->Release()) m_ref = nullptr;
+        if (m_ref) { m_ref->Release(); m_ref = nullptr; }
     }
 
     OMPtr(T* ref) : m_ref(ref) { if (m_ref) m_ref->AddRef(); }
@@ -35,7 +35,7 @@ public:
     T** GetAddressOf() { return &m_ref; }
     T** ReleaseAndGetAddressOf()
     {
-        if (m_ref) { if (m_ref->Release()) m_ref = nullptr; }
+        if (m_ref) { m_ref->Release(); m_ref = nullptr; }
         return &m_ref;
     }
 
