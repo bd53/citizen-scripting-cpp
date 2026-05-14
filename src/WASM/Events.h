@@ -3,12 +3,19 @@
 #include "Imports.h"
 #include "Types.h"
 #include "Context.h"
+#include "../EventTraits.h"
 
 namespace fx
 {
 
-inline void on(const std::string& event, EventHandler h)
+template<typename F>
+inline void on(const std::string& event, F&& handler)
 {
+    EventHandler h;
+    if constexpr (std::is_convertible_v<std::decay_t<F>, EventHandler>)
+        h = EventHandler(std::forward<F>(handler));
+    else
+        h = detail::wrap_typed_handler(std::forward<F>(handler));
     if (auto* c = fxw_internal::currentContext())
     {
         bool first = c->events.find(event) == c->events.end() || c->events[event].empty();
@@ -25,11 +32,12 @@ inline void on(const std::string& event, EventHandler h)
     }
 }
 
-inline void onNet(const std::string& event, EventHandler h)
+template<typename F>
+inline void onNet(const std::string& event, F&& handler)
 {
     if (auto* c = fxw_internal::currentContext())
         c->netSafeEvents.insert(event);
-    on(event, std::move(h));
+    on(event, std::forward<F>(handler));
 }
 
 template<typename... TArgs>

@@ -1,20 +1,33 @@
 #pragma once
 
 #include "../Resource.h"
+#include "../EventTraits.h"
 
 namespace fx
 {
 
-inline void on(const std::string& event, EventHandler handler)
+template<typename F>
+inline void on(const std::string& event, F&& handler)
 {
     if (auto* ctx = detail::g_ctx)
-        ctx->on(event, std::move(handler));
+    {
+        if constexpr (std::is_convertible_v<std::decay_t<F>, EventHandler>)
+            ctx->on(event, EventHandler(std::forward<F>(handler)));
+        else
+            ctx->on(event, detail::wrap_typed_handler(std::forward<F>(handler)));
+    }
 }
 
-inline void onNet(const std::string& event, EventHandler handler)
+template<typename F>
+inline void onNet(const std::string& event, F&& handler)
 {
     if (auto* ctx = detail::g_ctx)
-        ctx->onNet(event, std::move(handler));
+    {
+        if constexpr (std::is_convertible_v<std::decay_t<F>, EventHandler>)
+            ctx->onNet(event, EventHandler(std::forward<F>(handler)));
+        else
+            ctx->onNet(event, detail::wrap_typed_handler(std::forward<F>(handler)));
+    }
 }
 
 inline void onTick(TickHandler handler)

@@ -42,13 +42,11 @@ Server
         fx::trace("Resource stopping, %zu players tracked.\n", players->size());
     });
 
-    fx::on("playerConnecting", [pending](const std::string& source, fx::EventArgs args) {
-        std::string name = args.get<std::string>(0);
+    fx::on("playerConnecting", [pending](const std::string& source, std::string name) {
         (*pending)[extractId(source)] = name;
     });
 
-    fx::on("playerJoining", [pending, players](const std::string& source, fx::EventArgs args) {
-        std::string oldId = args.get<std::string>(0);
+    fx::on("playerJoining", [pending, players](const std::string& source, std::string oldId) {
         auto it = pending->find(oldId);
         std::string name = (it != pending->end()) ? it->second : "Unknown";
         if (it != pending->end()) pending->erase(it);
@@ -58,8 +56,7 @@ Server
         fx::trace("%s [%s] (%s) has connected. Players Online: %zu\n", name.c_str(), license.c_str(), id.c_str(), players->size());
     });
 
-    fx::on("playerDropped", [players](const std::string& source, fx::EventArgs args) {
-        std::string reason = args.get<std::string>(0);
+    fx::on("playerDropped", [players](const std::string& source, std::string reason) {
         std::string id = extractId(source);
         std::string name = players->count(id) ? (*players)[id] : "Unknown";
         std::string license = fx::natives::cfx::GetPlayerIdentifierByType(id.c_str(), "license2");
@@ -67,11 +64,8 @@ Server
         fx::trace("%s [%s] (%s) has disconnected (%s). Players Online: %zu\n", name.c_str(), license.c_str(), id.c_str(), reason.c_str(), players->size());
     });
 
-    fx::onNet("chatMessage", [players](const std::string& source, fx::EventArgs args) {
-        std::string id = args.size() > 0 ? std::to_string(args.get<int>(0)) : extractId(source);
-        std::string name = args.size() > 1 ? args.get<std::string>(1) : "Unknown";
-        std::string message = args.size() > 2 ? args.get<std::string>(2) : "";
-        fx::trace("%s (%s) has sent a chat message: %s\n", name.c_str(), id.c_str(), message.c_str());
+    fx::onNet("chatMessage", [players](const std::string& source, int author, std::string name, std::string message) {
+        fx::trace("%s (%d) has sent a chat message: %s\n", name.c_str(), author, message.c_str());
     });
 
     fx::addStateBagChangeHandler("", "", [](const std::string& bagName, const std::string& key, const fx::json::Value& value, int source, bool replicated) {
