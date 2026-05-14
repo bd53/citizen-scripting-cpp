@@ -36,6 +36,27 @@ FXCPP_WASM_EXPORT int32_t fxcpp_invoke_ref(int32_t callback_id, const uint8_t* a
     return static_cast<int32_t>(result.size());
 }
 
+FXCPP_WASM_EXPORT int32_t fxcpp_duplicate_ref(int32_t callback_id)
+{
+    auto& counts = fxw_internal::refCounts();
+    auto it = counts.find(callback_id);
+    if (it != counts.end())
+        ++it->second;
+    return callback_id;
+}
+
+FXCPP_WASM_EXPORT void fxcpp_remove_ref(int32_t callback_id)
+{
+    auto& counts = fxw_internal::refCounts();
+    auto it = counts.find(callback_id);
+    if (it == counts.end()) return;
+    if (--it->second <= 0)
+    {
+        counts.erase(it);
+        fxw_internal::refCallbacks().erase(callback_id);
+    }
+}
+
 #define FXCPP_WASM_ENTRY \
     static void _fxcpp_wasm_body(); \
     FXCPP_WASM_EXPORT void fxcpp_init() \

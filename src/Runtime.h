@@ -94,6 +94,9 @@ public:
     bool callVoid(const wasmtime_func_t& fn);
     bool callEvent(uint32_t namePtr, uint32_t nameLen, uint32_t argsPtr, uint32_t argsLen, uint32_t srcPtr, uint32_t srcLen);
     bool callInvokeRef(uint32_t callbackId, const char* argsSerialized, uint32_t argsSize, std::vector<char>& result);
+    void wasmMapRef(int32_t refIdx, int32_t callbackId);
+    void wasmDuplicateRef(int32_t callbackId);
+    void wasmRemoveRef(int32_t callbackId);
 #endif
 
 private:
@@ -130,12 +133,17 @@ private:
     wasmtime_func_t m_fnAlloc{};
     wasmtime_func_t m_fnFree{};
     wasmtime_func_t m_fnInvokeRef{};
+    wasmtime_func_t m_fnDuplicateRef{};
+    wasmtime_func_t m_fnRemoveRef{};
     bool m_hasTickFn = false;
     bool m_hasEventFn = false;
     bool m_hasStopFn = false;
     bool m_hasAllocFn = false;
     bool m_hasFreeFn = false;
     bool m_hasInvokeRefFn = false;
+    bool m_hasDuplicateRefFn = false;
+    bool m_hasRemoveRefFn = false;
+    std::unordered_map<int32_t, int32_t> m_refToCallbackId;
     bool m_eventCanceled = false;
     fxNativeContext m_lastNativeCtx{};
     void defineImports();

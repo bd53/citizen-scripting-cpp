@@ -10,6 +10,7 @@ inline int32_t createRef(fxw_internal::RefCallbackFn cb)
 {
     int32_t id = fxw_internal::nextCallbackId()++;
     fxw_internal::refCallbacks()[id] = std::move(cb);
+    fxw_internal::refCounts()[id] = 1;
     int32_t hostRef = __fxcpp_create_ref(id);
     return hostRef;
 }

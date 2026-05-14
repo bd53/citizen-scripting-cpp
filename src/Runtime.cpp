@@ -345,6 +345,7 @@ static wasm_trap_t* cb_create_ref(void* env, wasmtime_caller_t*, const wasmtime_
             result = { static_cast<char>(0x90) };
         return result;
     });
+    rt->wasmMapRef(refIdx, callbackId);
     results[0] = i32val(refIdx);
     return nullptr;
 }
@@ -769,6 +770,32 @@ bool Runtime::callInvokeRef(uint32_t callbackId, const char* argsSerialized, uin
     return true;
 }
 
+void Runtime::wasmMapRef(int32_t refIdx, int32_t callbackId)
+{
+    m_refToCallbackId[refIdx] = callbackId;
+}
+
+void Runtime::wasmDuplicateRef(int32_t callbackId)
+{
+    if (!m_hasDuplicateRefFn || !m_store) return;
+    wasmtime_val_t a[1] = { i32val(callbackId) };
+    wasmtime_val_t ret{};
+    wasm_trap_t* trap = nullptr;
+    auto* err = wasmtime_func_call(wasmtime_store_context(m_store), &m_fnDuplicateRef, a, 1, &ret, 1, &trap);
+    if (err || trap)
+        fprintf(stderr, "[%s/wasm] duplicate_ref trap: %s\n", m_resourceName.c_str(), wasmErrMsg(err, trap).c_str());
+}
+
+void Runtime::wasmRemoveRef(int32_t callbackId)
+{
+    if (!m_hasRemoveRefFn || !m_store) return;
+    wasmtime_val_t a[1] = { i32val(callbackId) };
+    wasm_trap_t* trap = nullptr;
+    auto* err = wasmtime_func_call(wasmtime_store_context(m_store), &m_fnRemoveRef, a, 1, nullptr, 0, &trap);
+    if (err || trap)
+        fprintf(stderr, "[%s/wasm] remove_ref trap: %s\n", m_resourceName.c_str(), wasmErrMsg(err, trap).c_str());
+}
+
 void Runtime::defineImports()
 {
     auto def = [&](const char* name, wasm_functype_t* ft, wasmtime_func_callback_t cb)
@@ -834,6 +861,8 @@ bool Runtime::resolveExports()
     m_hasAllocFn = get("fxcpp_alloc", m_fnAlloc);
     m_hasFreeFn = get("fxcpp_free", m_fnFree);
     m_hasInvokeRefFn = get("fxcpp_invoke_ref", m_fnInvokeRef);
+    m_hasDuplicateRefFn = get("fxcpp_duplicate_ref", m_fnDuplicateRef);
+    m_hasRemoveRefFn = get("fxcpp_remove_ref", m_fnRemoveRef);
     wasmtime_extern_t memExt{};
     if (wasmtime_instance_export_get(ctx, &m_instance, "memory", 6, &memExt) &&
         memExt.kind == WASMTIME_EXTERN_MEMORY)
@@ -851,6 +880,7 @@ void Runtime::destroyWasm()
     if (m_store) { wasmtime_store_delete(m_store); m_store = nullptr; }
     m_hasMemory = m_hasTickFn = m_hasEventFn = m_hasStopFn = false;
     m_hasAllocFn = m_hasFreeFn = m_hasInvokeRefFn = false;
+    m_hasDuplicateRefFn = m_hasRemoveRefFn = false;
 }
 
 result_t Runtime::loadWasm(const std::string& resolvedPath)
@@ -1064,11 +1094,33 @@ result_t OM_DECL Runtime::DuplicateRef(int32_t refIdx, int32_t* newRefIdx)
     if (++m_nextRefIdx == 0) m_nextRefIdx = 1;
     *newRefIdx = static_cast<int32_t>(idx);
     m_refs[*newRefIdx] = it->second;
+#ifdef FXCPP_WASM_SUPPORT
+    if (m_mode == Mode::Wasm)
+    {
+        auto cit = m_refToCallbackId.find(refIdx);
+        if (cit != m_refToCallbackId.end())
+        {
+            m_refToCallbackId[*newRefIdx] = cit->second;
+            wasmDuplicateRef(cit->second);
+        }
+    }
+#endif
     return FX_S_OK;
 }
 
 result_t OM_DECL Runtime::RemoveRef(int32_t refIdx)
 {
+#ifdef FXCPP_WASM_SUPPORT
+    if (m_mode == Mode::Wasm)
+    {
+        auto cit = m_refToCallbackId.find(refIdx);
+        if (cit != m_refToCallbackId.end())
+        {
+            wasmRemoveRef(cit->second);
+            m_refToCallbackId.erase(cit);
+        }
+    }
+#endif
     m_refs.erase(refIdx);
     return FX_S_OK;
 }

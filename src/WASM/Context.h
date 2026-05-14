@@ -73,6 +73,12 @@ inline std::unordered_map<int32_t, RefCallbackFn>& refCallbacks()
     return s_map;
 }
 
+inline std::unordered_map<int32_t, int32_t>& refCounts()
+{
+    static std::unordered_map<int32_t, int32_t> s_map;
+    return s_map;
+}
+
 inline int32_t& nextCallbackId()
 {
     static int32_t s_id = 1;
