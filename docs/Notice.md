@@ -35,11 +35,10 @@ The runtime plugin (`libcitizen-scripting-cpp.so`) is loaded by FXServer and han
 
 ## Limitations
 
-- As mentioned previosly, client-side is **not** yet supported.
+- As mentioned previously, client-side is **not** yet supported.
 - WASM resources cannot use C++ exceptions (`-fno-exceptions` is required).
 - `IScriptStackWalkingRuntime` is no-op. C++ resources won't appear in cross-runtime stack traces from `FORMAT_STACK_TRACE`.
 - `IScriptProfiler` is not yet implemented. `profiler record` won't produce scope events from C++ resources.
-- Probably some other stuff somewhere
 
 ## Compatibility
 

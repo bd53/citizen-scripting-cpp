@@ -148,7 +148,7 @@ Events and exports sent from C++ can be received by Lua, JavaScript, and C# reso
 | `bool` | `boolean` | `boolean` | `bool` |
 | `nullptr` | `nil` | `null` / `undefined` | `null` |
 
-Function references (callbacks passed between resources) are serialized as MsgPack ext type 10 and handld by the export system.
+Function references (callbacks passed between resources) are serialized as MsgPack ext type 10 and handled by the export system.
 
 ## Natives
 

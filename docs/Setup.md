@@ -109,7 +109,7 @@ Extra flags are passed through to the compiler (e.g. `-O3`, `-Wall`).
 
 ## Automated build and deploy
 
-The `tools/deploy` utilty handle full pipeline: code generation, premake, compilation, and deployment of the runtime.
+The `tools/deploy` utility handles full pipeline: code generation, premake, compilation, and deployment of the runtime.
 
 ```bash
 # Set your server and resource paths

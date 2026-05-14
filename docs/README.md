@@ -41,9 +41,9 @@ All runtimes implement `IScriptRuntime`, `IScriptFileHandlingRuntime`, `IScriptE
 | Tick model | Bookmark scheduler | UV loop timer | Tick-less (scheduled time) | Bookmark scheduler |
 | Coroutines | `CreateThread` / `Wait` | `Promises` / `async-await` | `async` / `await` (Task) | `co_await` / `fx::Wait{}` |
 
-Mono-v2's tick-less optimization skips rntime entry/exit entirely when there's no scheduled work, `GetCurrentSchedulerTime() < m_sharedData.m_scheduledTime` short-circuits the tick.
+Mono-v2's tick-less optimization skips runtime entry/exit entirely when there's no scheduled work, `GetCurrentSchedulerTime() < m_sharedData.m_scheduledTime` short-circuits the tick.
 
-Lua and C++ use the bookmark schedlr (`IScriptTickRuntimeWithBookmarks`), which lets the host call `TickBookmarks` with only the bookmarks that are ready, avoiding unnecessary tick overhead.
+Lua and C++ use the bookmark scheduler (`IScriptTickRuntimeWithBookmarks`), which lets the host call `TickBookmarks` with only the bookmarks that are ready, avoiding unnecessary tick overhead.
 
 ### Stdlib restrictions
 
