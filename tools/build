@@ -1,0 +1,49 @@
+#!/bin/bash
+set -e
+
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+OUTPUT=""
+for ((i=1; i<=$#; i++)); do
+    if [[ "${!i}" == "-o" ]]; then
+        j=$((i+1))
+        OUTPUT="${!j}"
+        break
+    fi
+done
+
+if [[ -z "$OUTPUT" ]]; then
+    echo "Usage: build <source...> [flags] -o <output.wasm|output.so>"
+    exit 1
+fi
+
+EXT="${OUTPUT##*.}"
+
+case "$EXT" in
+    wasm)
+        SYSROOT="${WASI_SYSROOT:-}"
+        if [[ -z "$SYSROOT" ]]; then
+            for d in /usr/share/wasi-sysroot /opt/wasi-sdk/share/wasi-sysroot; do
+                [[ -d "$d" ]] && SYSROOT="$d" && break
+            done
+        fi
+        if [[ -z "$SYSROOT" ]]; then
+            echo "wasi-sysroot not found. Install it or set WASI_SYSROOT."
+            exit 1
+        fi
+        exec clang++ --target=wasm32-wasip1 -std=c++23 -O2 \
+            --sysroot="$SYSROOT" -fno-exceptions \
+            -I"$PROJECT_DIR" \
+            -Wl,--export-memory \
+            "$@"
+        ;;
+    so)
+        exec g++ -std=c++23 -O2 -shared -fPIC -fvisibility=hidden \
+            -I"$PROJECT_DIR" \
+            "$@"
+        ;;
+    *)
+        echo "output must be .wasm or .so"
+        exit 1
+        ;;
+esac
