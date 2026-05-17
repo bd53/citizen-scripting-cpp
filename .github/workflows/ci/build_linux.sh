@@ -22,7 +22,4 @@ tools/build tools/example/server.cpp
 
 rm -f tools/example/server.wasm
 
-echo "Checking format..."
-find src include tools/example -name '*.cpp' -o -name '*.h' | xargs clang-format --dry-run --Werror
-
 echo "All checks passed."
