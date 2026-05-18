@@ -10,38 +10,10 @@ static std::string extractId(const std::string& source)
 
 Server
 {
+        fx::trace("Instantiated instance of script %s.\n", fx::getCurrentResourceName().c_str());
+
         auto pending = std::make_shared<std::unordered_map<std::string, std::string>>();
         auto players = std::make_shared<std::unordered_map<std::string, std::string>>();
-
-        auto meta = [](const std::string& key)
-        {
-                return fx::getResourceMetadata(key);
-        };
-
-        if (!meta("fx_version").empty())
-                fx::trace("Manifest: %s\n", meta("fx_version").c_str());
-        if (!meta("game").empty())
-                fx::trace("Game: %s\n", meta("game").c_str());
-        fx::trace("Name: %s\n", meta("name").c_str());
-        if (!meta("author").empty())
-                fx::trace("Author: %s\n", meta("author").c_str());
-        if (!meta("description").empty())
-                fx::trace("Description: %s\n", meta("description").c_str());
-        if (!meta("version").empty())
-                fx::trace("Version: %s\n", meta("version").c_str());
-
-        int server = fx::getNumResourceMetadata("server_script");
-        if (server > 0)
-        {
-                std::string scripts = "Server Scripts: ";
-                for (int i = 0; i < server; i++)
-                {
-                        if (i > 0)
-                                scripts += ", ";
-                        scripts += fx::getResourceMetadata("server_script", i);
-                }
-                fx::trace("%s\n", scripts.c_str());
-        }
 
         fx::onStop([players]()
         {
@@ -103,55 +75,4 @@ Server
                 fx::trace("[fx::addExport] %s\n", info.asStr("failed").c_str());
                 fx::callExport("fwa", "SendChatMessage", { std::stoi(source), "^#f0a0e4[INFO] ^#ffffffHello from ^#f0a0e4C++^#ffffff!" });
         });
-
-        fx::createThread([]() -> fx::ScriptTask
-        {
-                fx::trace("[fx::createThread] started\n");
-                for (int i = 1; i <= 5; i++)
-                {
-                        co_await fx::Wait{ 2000 };
-                        fx::trace("[fx::createThread] tick %d (every 2s)\n", i);
-                }
-                fx::trace("[fx::createThread] done\n");
-        });
-
-        fx::ProcessResult result = fx::spawnProcess("echo hello from c++");
-        if (result.status == -1)
-                fx::trace("[fx::spawnProcess] permission denied\n");
-        else if (result.status == -2)
-                fx::trace("[fx::spawnProcess] failed to spawn\n");
-        else
-                fx::trace("[fx::spawnProcess] output: %s\n", result.output.c_str());
-
-        int32_t wid = fx::createWorker("test_worker", "hello from main");
-        if (wid == -1)
-                fx::trace("[fx::createWorker] permission denied\n");
-        else if (wid == -2)
-                fx::trace("[fx::createWorker] error\n");
-        else
-        {
-                fx::trace("[fx::createWorker] started worker %d\n", wid);
-                fx::setTimeout(100, [wid]
-                {
-                        fx::WorkerResult wr = fx::pollWorker(wid);
-                        if (wr.status > 0)
-                                fx::trace("[fx::pollWorker] result: %s\n", wr.output.c_str());
-                        else if (wr.status == 0)
-                                fx::trace("[fx::pollWorker] still running\n");
-                        else
-                                fx::trace("[fx::pollWorker] error (%d)\n", wr.status);
-                });
-        }
-}
-
-FXCPP_WORKER(test_worker)
-{
-        std::string msg(input, input_len);
-        std::string out = "worker got: " + msg;
-        int32_t copy = static_cast<int32_t>(out.size());
-        if (copy > result_max - 1)
-                copy = result_max - 1;
-        memcpy(result, out.data(), copy);
-        result[copy] = '\0';
-        return copy;
 }

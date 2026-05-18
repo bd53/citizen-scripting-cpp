@@ -43,6 +43,7 @@ struct ProcessResult
 #include <memory>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <functional>
@@ -3075,10 +3076,6 @@ namespace fx
 {
 
 using RefCallback = std::function<std::vector<char>(const char* argsSerialized, uint32_t argsSize)>;
-using AddRefFn = std::function<int32_t(RefCallback)>;
-using RemoveRefFn = std::function<void(int32_t)>;
-using ScheduleBookmarkFn = std::function<void(uint64_t, int64_t)>;
-
 inline ProcessResult spawnProcess(const std::string& command, size_t maxOutputBytes = 1048576, int timeoutMs = 30000)
 {
         ProcessResult result{ };
@@ -3345,8 +3342,6 @@ class IScriptRefRuntime : public fxIBase
         NS_IMETHOD RemoveRef(int32_t refIdx) = 0;
 };
 
-class IScriptHostWithResourceData;
-
 FX_DEFINE_GUID(IID_IScriptFileHandlingRuntime, 0x567634C6, 0x3BDD, 0x4D0E, 0xAF, 0x39, 0x74, 0x72, 0xAE, 0xD4, 0x79, 0xB7);
 
 class IScriptFileHandlingRuntime : public fxIBase
@@ -3357,8 +3352,6 @@ class IScriptFileHandlingRuntime : public fxIBase
         HandlesFile(char* scriptFile, IScriptHostWithResourceData* metadata) = 0;
         NS_IMETHOD LoadFile(char* scriptFile) = 0;
 };
-
-class IScriptTickRuntimeWithBookmarks;
 
 FX_DEFINE_GUID(IID_IScriptHostWithBookmarks, 0x2A7E092D, 0x6CE9, 0x4B9D, 0xAC, 0x4F, 0x8D, 0xA8, 0x18, 0xBD, 0x0D, 0xA4);
 
@@ -3574,6 +3567,14 @@ class CppScriptRuntime final : public fx::OMClass<CppScriptRuntime, IScriptRunti
         {
                 return m_host.GetRef();
         }
+        IScriptHostWithResourceData* metadataHost() const
+        {
+                return m_metadataHost.GetRef();
+        }
+        IScriptHostWithManifest* manifestHost() const
+        {
+                return m_manifestHost.GetRef();
+        }
         const std::string& resourceName() const
         {
                 return m_resourceName;
@@ -3617,6 +3618,7 @@ class CppScriptRuntime final : public fx::OMClass<CppScriptRuntime, IScriptRunti
         fx::OMPtr<IScriptHost> m_host;
         fx::OMPtr<IScriptHostWithBookmarks> m_bookmarkHost;
         fx::OMPtr<IScriptHostWithResourceData> m_metadataHost;
+        fx::OMPtr<IScriptHostWithManifest> m_manifestHost;
         void* m_parentObject = nullptr;
         int32_t m_instanceId = 0;
         std::string m_resourceName;

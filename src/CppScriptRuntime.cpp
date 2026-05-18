@@ -8,8 +8,8 @@
 #include <climits>
 #include <vector>
 
+#include <cstdarg>
 #include <unistd.h>
-#include <sys/stat.h>
 
 using namespace fx::cpp;
 
@@ -80,19 +80,41 @@ static std::string GetConvar(IScriptHost* host, const char* name, const char* de
         return result ? std::string(result) : std::string(defaultValue);
 }
 
+__attribute__((format(printf, 1, 2)))
+static void LogError(const char* fmt, ...)
+{
+        va_list ap;
+        va_start(ap, fmt);
+        fprintf(stderr, "\033[31m[citizen-scripting-cpp]\033[0m ");
+        vfprintf(stderr, fmt, ap);
+        fputc('\n', stderr);
+        va_end(ap);
+}
+
+__attribute__((format(printf, 1, 2)))
+static void LogWarning(const char* fmt, ...)
+{
+        va_list ap;
+        va_start(ap, fmt);
+        fprintf(stderr, "\033[33m[citizen-scripting-cpp]\033[0m ");
+        vfprintf(stderr, fmt, ap);
+        fputc('\n', stderr);
+        va_end(ap);
+}
+
 static bool ValidateScriptPath(const char* scriptFile, const std::string& root, std::string& resolvedPath, std::string& resolvedRoot, const char* resourceName)
 {
         std::string_view scriptFileView(scriptFile);
         if (scriptFileView.find("/..") != std::string_view::npos || scriptFileView.find("../") != std::string_view::npos || scriptFileView == "..")
         {
-                fprintf(stderr, "[citizen-scripting-cpp] Rejected script path with '..': '%s'\n", scriptFile);
+                LogError("Rejected script path with '..': '%s'", scriptFile);
                 return false;
         }
         std::string fullPath = root + "/" + scriptFile;
         char* resolvedFull = realpath(fullPath.c_str(), nullptr);
         if (!resolvedFull)
         {
-                fprintf(stderr, "[citizen-scripting-cpp] realpath failed for '%s'\n", fullPath.c_str());
+                LogError("realpath failed for '%s'", fullPath.c_str());
                 return false;
         }
         resolvedPath = resolvedFull;
@@ -100,14 +122,14 @@ static bool ValidateScriptPath(const char* scriptFile, const std::string& root, 
         char* resolvedRootBuf = realpath(root.c_str(), nullptr);
         if (!resolvedRootBuf)
         {
-                fprintf(stderr, "[citizen-scripting-cpp] realpath failed for root '%s'\n", root.c_str());
+                LogError("realpath failed for root '%s'", root.c_str());
                 return false;
         }
         resolvedRoot = resolvedRootBuf;
         free(resolvedRootBuf);
         if (resolvedPath.compare(0, resolvedRoot.size(), resolvedRoot) != 0 || (resolvedPath.size() > resolvedRoot.size() && resolvedPath[resolvedRoot.size()] != '/'))
         {
-                fprintf(stderr, "[citizen-scripting-cpp] Script path '%s' resolves outside resource root\n", scriptFile);
+                LogError("Script path '%s' resolves outside resource root", scriptFile);
                 return false;
         }
         return true;
@@ -182,7 +204,7 @@ static bool WasmCall(wasmtime_store_t* store, const wasmtime_func_t& fn, const w
                         wasm_trap_message(trap, &msg);
                         wasm_trap_delete(trap);
                 }
-                fprintf(stderr, "[%s] %s: %.*s\n", resourceName, label, static_cast<int>(msg.size), msg.data);
+                fprintf(stderr, "\033[31m[%s] %s:\033[0m %.*s\n", resourceName, label, static_cast<int>(msg.size), msg.data);
                 wasm_byte_vec_delete(&msg);
                 return false;
         }
@@ -202,7 +224,7 @@ static wasm_trap_t* CbTrace(void* env, wasmtime_caller_t* caller, const wasmtime
         std::string msg(reinterpret_cast<const char*>(mem.base + ptr), len);
         if (rt->host())
                 rt->host()->ScriptTrace(const_cast<char*>(msg.c_str()));
-        fprintf(stderr, "[script:%s] %s", rt->resourceName().c_str(), msg.c_str());
+        fprintf(stderr, "\033[36m[script:%s]\033[0m %s", rt->resourceName().c_str(), msg.c_str());
         if (!msg.empty() && msg.back() != '\n')
                 fputc('\n', stderr);
         return nullptr;
@@ -392,17 +414,16 @@ static wasm_trap_t* CbGetResourceMetadata(void* env, wasmtime_caller_t* caller, 
                 return nullptr;
         }
         std::string key(reinterpret_cast<const char*>(mem.base + keyPtr), keyLen);
-        fx::OMPtr<IScriptHostWithResourceData> md;
-        fx::OMPtr<IScriptHost> h(rt->host());
+        auto* md = rt->metadataHost();
         std::string value;
-        if (FX_SUCCEEDED(h.As(&md)) && md.GetRef())
+        if (md)
         {
                 char* val = nullptr;
                 if (FX_SUCCEEDED(md->GetResourceMetaData(const_cast<char*>(key.c_str()), index, &val)) && val)
                         value = val;
         }
         int32_t actualLen = static_cast<int32_t>(value.size());
-        if (bufMax > 0 && mem.check(bufPtr, static_cast<size_t>(std::min(bufMax, actualLen + 1))))
+        if (bufMax > 0 && mem.check(bufPtr, static_cast<size_t>(std::min<int32_t>(bufMax, actualLen < INT32_MAX ? actualLen + 1 : INT32_MAX))))
         {
                 size_t copy = std::min<size_t>(value.size(), static_cast<size_t>(bufMax) - 1);
                 memcpy(mem.base + bufPtr, value.data(), copy);
@@ -428,10 +449,9 @@ static wasm_trap_t* CbGetNumResourceMetadata(void* env, wasmtime_caller_t* calle
                 return nullptr;
         }
         std::string key(reinterpret_cast<const char*>(mem.base + keyPtr), keyLen);
-        fx::OMPtr<IScriptHostWithResourceData> md;
-        fx::OMPtr<IScriptHost> h(rt->host());
+        auto* md = rt->metadataHost();
         int32_t count = 0;
-        if (FX_SUCCEEDED(h.As(&md)) && md.GetRef())
+        if (md)
                 md->GetNumResourceMetaData(const_cast<char*>(key.c_str()), &count);
         results[0] = I32Val(count);
         return nullptr;
@@ -455,10 +475,9 @@ static wasm_trap_t* CbIsManifestVersionV2Between(void* env, wasmtime_caller_t* c
         }
         std::string lower(reinterpret_cast<const char*>(mem.base + lowerPtr), lowerLen);
         std::string upper(reinterpret_cast<const char*>(mem.base + upperPtr), upperLen);
-        fx::OMPtr<IScriptHostWithManifest> mh;
-        fx::OMPtr<IScriptHost> h(rt->host());
+        auto* mh = rt->manifestHost();
         bool result = false;
-        if (FX_SUCCEEDED(h.As(&mh)) && mh.GetRef())
+        if (mh)
                 mh->IsManifestVersionV2Between(const_cast<char*>(lower.c_str()), const_cast<char*>(upper.c_str()), &result);
         results[0] = I32Val(result ? 1 : 0);
         return nullptr;
@@ -472,7 +491,7 @@ static wasm_trap_t* CbCreateRef(void* env, wasmtime_caller_t*, const wasmtime_va
         {
                 std::vector<char> result;
                 if (!rt->callInvokeRef(callbackId, argsSerialized, argsSize, result))
-                        result = std::vector<char>{ static_cast<char>(MSGPACK_EMPTY_ARRAY) };
+                        throw std::runtime_error("WASM trap in ref callback");
                 return result;
         });
         rt->wasmMapRef(refIdx, callbackId);
@@ -537,6 +556,8 @@ static wasm_trap_t* CbInvokeFunctionReference(void* env, wasmtime_caller_t* call
                 return nullptr;
         std::string refStr(reinterpret_cast<const char*>(mem.base + refPtr), refLen);
         std::vector<char> argsCopy(reinterpret_cast<char*>(mem.base + argsPtr), reinterpret_cast<char*>(mem.base + argsPtr) + argsLen);
+        if (!rt->host())
+                return nullptr;
         fx::OMPtr<IScriptBuffer> retBuf;
         rt->host()->InvokeFunctionReference(const_cast<char*>(refStr.c_str()), argsCopy.data(), argsLen, retBuf.ReleaseAndGetAddressOf());
         uint32_t dataPtr = 0, dataLen = 0;
@@ -613,7 +634,7 @@ static wasm_trap_t* CbSpawnProcess(void* env, wasmtime_caller_t* caller, const w
         }
         if (!HasWasmPermission(rt->host(), "sv_wasmChildProcess", rt->resourceName()))
         {
-                fprintf(stderr, "[citizen-scripting-cpp] Resource '%s' denied child_process permission. Add 'set sv_wasmChildProcess \"%s\"' to your server.cfg\n", rt->resourceName().c_str(), rt->resourceName().c_str());
+                LogError("Resource '%s' denied child_process permission. Add 'set sv_wasmChildProcess \"%s\"' to your server.cfg", rt->resourceName().c_str(), rt->resourceName().c_str());
                 results[0] = I32Val(-1);
                 return nullptr;
         }
@@ -635,7 +656,7 @@ static wasm_trap_t* CbSpawnProcess(void* env, wasmtime_caller_t* caller, const w
         }
         else if (!pr.output.empty())
         {
-                fprintf(stderr, "[citizen-scripting-cpp] spawn_process: output buffer out of bounds\n");
+                LogError("spawn_process: output buffer out of bounds");
         }
         results[0] = I32Val(written);
         return nullptr;
@@ -713,13 +734,13 @@ static wasm_trap_t* CbCreateWorker(void* env, wasmtime_caller_t* caller, const w
         }
         if (!HasWasmPermission(rt->host(), "sv_wasmWorkerThreads", rt->resourceName()))
         {
-                fprintf(stderr, "[citizen-scripting-cpp] Resource '%s' denied worker_threads permission. Add 'set sv_wasmWorkerThreads \"%s\"' to your server.cfg\n", rt->resourceName().c_str(), rt->resourceName().c_str());
+                LogError("Resource '%s' denied worker_threads permission. Add 'set sv_wasmWorkerThreads \"%s\"' to your server.cfg", rt->resourceName().c_str(), rt->resourceName().c_str());
                 results[0] = I32Val(-1);
                 return nullptr;
         }
         if (static_cast<int32_t>(rt->m_workers.size()) >= CppScriptRuntime::MAX_WORKERS_PER_RESOURCE)
         {
-                fprintf(stderr, "[citizen-scripting-cpp] Resource '%s' exceeded max worker limit (%d)\n", rt->resourceName().c_str(), CppScriptRuntime::MAX_WORKERS_PER_RESOURCE);
+                LogError("Resource '%s' exceeded max worker limit (%d)", rt->resourceName().c_str(), CppScriptRuntime::MAX_WORKERS_PER_RESOURCE);
                 results[0] = I32Val(-3);
                 return nullptr;
         }
@@ -784,7 +805,7 @@ static wasm_trap_t* CbCreateWorker(void* env, wasmtime_caller_t* caller, const w
                 wasmtime_extern_t fnExt{ };
                 if (!wasmtime_instance_export_get(storeCtx, &instance, fnName.c_str(), fnName.size(), &fnExt) || fnExt.kind != WASMTIME_EXTERN_FUNC)
                 {
-                        fprintf(stderr, "[citizen-scripting-cpp] Worker export '%s' not found\n", fnName.c_str());
+                        LogError("Worker export '%s' not found", fnName.c_str());
                         std::lock_guard<std::mutex> lk(state->mutex);
                         state->status = CppScriptRuntime::WorkerState::Error;
                         wasmtime_linker_delete(linker);
@@ -935,6 +956,9 @@ result_t OM_DECL CppScriptRuntime::Create(IScriptHost* host)
                 if (FX_SUCCEEDED(md->GetResourceName(&name)) && name)
                         m_resourceName = name;
         }
+        fx::OMPtr<IScriptHostWithManifest> mh;
+        if (FX_SUCCEEDED(m_host.As(&mh)) && mh.GetRef())
+                m_manifestHost = mh;
         return FX_S_OK;
 }
 
@@ -961,6 +985,7 @@ result_t OM_DECL CppScriptRuntime::Destroy()
         destroyWasm();
         m_host = { };
         m_metadataHost = { };
+        m_manifestHost = { };
         return FX_S_OK;
 }
 
@@ -1230,7 +1255,7 @@ void CppScriptRuntime::defineImports()
                 auto* err = wasmtime_linker_define_func(m_linker, "fxcpp", 5, imp.name, strlen(imp.name), ft, imp.hostCb, this, nullptr);
                 wasm_functype_delete(ft);
                 if (err)
-                        fprintf(stderr, "[citizen-scripting-cpp] failed to define import '%s': %s\n", imp.name, wasmErrMsg(err, nullptr).c_str());
+                        LogError("failed to define import '%s': %s", imp.name, wasmErrMsg(err, nullptr).c_str());
         }
 }
 
@@ -1251,7 +1276,7 @@ bool CppScriptRuntime::resolveExports()
                 wasmtime_func_t initFn{ };
                 if (!get("fxcpp_init", initFn))
                 {
-                        fprintf(stderr, "[citizen-scripting-cpp] '%s' missing fxcpp_init export\n", m_resourceName.c_str());
+                        LogError("'%s' missing fxcpp_init export", m_resourceName.c_str());
                         return false;
                 }
                 if (!WasmCall(m_store, initFn, nullptr, 0, nullptr, 0, m_resourceName.c_str(), "fxcpp_init trap"))
@@ -1293,7 +1318,7 @@ void CppScriptRuntime::destroyWasm()
                                 std::this_thread::sleep_for(std::chrono::milliseconds(WORKER_SHUTDOWN_INTERVAL_MS));
                 }
                 if (!done)
-                        fprintf(stderr, "[citizen-scripting-cpp] Worker %d in '%s' did not finish within %ds, blocking on join\n", id, m_resourceName.c_str(), (WORKER_SHUTDOWN_ATTEMPTS * WORKER_SHUTDOWN_INTERVAL_MS) / 1000);
+                        LogWarning("Worker %d in '%s' did not finish within %ds, blocking on join", id, m_resourceName.c_str(), (WORKER_SHUTDOWN_ATTEMPTS * WORKER_SHUTDOWN_INTERVAL_MS) / 1000);
                 w->thread.join();
         }
         m_workers.clear();
@@ -1327,7 +1352,7 @@ result_t CppScriptRuntime::loadWasm(const std::string& resolvedPath)
                 FILE* f = fopen(resolvedPath.c_str(), "rb");
                 if (!f)
                 {
-                        fprintf(stderr, "[citizen-scripting-cpp] Cannot open '%s'\n", resolvedPath.c_str());
+                        LogError("Cannot open '%s'", resolvedPath.c_str());
                         return FX_E_INVALIDARG;
                 }
                 fseek(f, 0, SEEK_END);
@@ -1342,7 +1367,7 @@ result_t CppScriptRuntime::loadWasm(const std::string& resolvedPath)
                 if (fread(wasmBytes.data(), 1, wasmBytes.size(), f) != wasmBytes.size())
                 {
                         fclose(f);
-                        fprintf(stderr, "[citizen-scripting-cpp] Failed to read '%s'\n", resolvedPath.c_str());
+                        LogError("Failed to read '%s'", resolvedPath.c_str());
                         return FX_E_INVALIDARG;
                 }
                 fclose(f);
@@ -1365,7 +1390,7 @@ result_t CppScriptRuntime::loadWasm(const std::string& resolvedPath)
                 wasmtime_error_t* err = wasmtime_module_new(engine(), wasmBytes.data(), wasmBytes.size(), &m_module);
                 if (err)
                 {
-                        fprintf(stderr, "[citizen-scripting-cpp] Compile error in '%s': %s\n", resolvedPath.c_str(), wasmErrMsg(err, nullptr).c_str());
+                        LogError("Compile error in '%s': %s", resolvedPath.c_str(), wasmErrMsg(err, nullptr).c_str());
                         destroyWasm();
                         return FX_E_INVALIDARG;
                 }
@@ -1375,7 +1400,7 @@ result_t CppScriptRuntime::loadWasm(const std::string& resolvedPath)
                 auto* err = wasmtime_linker_instantiate(m_linker, wasmtime_store_context(m_store), m_module, &m_instance, &trap);
                 if (err || trap)
                 {
-                        fprintf(stderr, "[citizen-scripting-cpp] Instantiate error in '%s': %s\n", resolvedPath.c_str(), wasmErrMsg(err, trap).c_str());
+                        LogError("Instantiate error in '%s': %s", resolvedPath.c_str(), wasmErrMsg(err, trap).c_str());
                         destroyWasm();
                         return FX_E_INVALIDARG;
                 }
@@ -1397,6 +1422,12 @@ result_t CppScriptRuntime::loadWasm(const std::string& resolvedPath)
 
                 return FX_E_INVALIDARG;
         }
+        {
+                char buf[512];
+                if (m_host.GetRef())
+                        m_host->ScriptTrace(buf);
+                LogWarning("WebAssembly '%s' has been loaded into the c++ rt. This runtime is still in beta and shouldn't be used in production, crashes and breaking changes are to be expected.", m_resourceName.c_str());
+        }
         return FX_S_OK;
 }
 
@@ -1416,7 +1447,7 @@ result_t OM_DECL CppScriptRuntime::Tick()
         if (!callVoid(m_fnTick) && m_host.GetRef())
         {
                 char buf[256];
-                snprintf(buf, sizeof(buf), "SCRIPT ERROR: @%s: WASM trap in tick handler\n", m_resourceName.c_str());
+                snprintf(buf, sizeof(buf), "^1SCRIPT ERROR: @%s: WASM trap in tick handler^7\n", m_resourceName.c_str());
                 m_host->ScriptTrace(buf);
         }
         return FX_S_OK;
@@ -1501,7 +1532,7 @@ result_t OM_DECL CppScriptRuntime::TriggerEvent(char* eventName, char* argsSeria
         if (!callEvent(nameWasm, static_cast<uint32_t>(name.size()), argsWasm, serializedSize, srcWasm, static_cast<uint32_t>(src.size())) && m_host.GetRef())
         {
                 char buf[512];
-                snprintf(buf, sizeof(buf), "SCRIPT ERROR: @%s: WASM trap in event '%s'\n", m_resourceName.c_str(), eventName);
+                snprintf(buf, sizeof(buf), "^1SCRIPT ERROR: @%s: WASM trap in event '%s'^7\n", m_resourceName.c_str(), eventName);
                 m_host->ScriptTrace(buf);
         }
         wasmFree(block, totalSz);
@@ -1523,19 +1554,17 @@ result_t OM_DECL CppScriptRuntime::CallRef(int32_t refIdx, char* argsSerialized,
         catch (const std::exception& e)
         {
                 char buf[512];
-                snprintf(buf, sizeof(buf), "SCRIPT ERROR: @%s: Unhandled exception in ref %d: %s\n", m_resourceName.c_str(), refIdx, e.what());
+                snprintf(buf, sizeof(buf), "^1SCRIPT ERROR: @%s: Unhandled exception in ref %d: %s^7\n", m_resourceName.c_str(), refIdx, e.what());
                 if (m_host.GetRef())
                         m_host->ScriptTrace(buf);
-                fprintf(stderr, "[citizen-scripting-cpp] %s", buf);
                 result = std::vector<char>{ static_cast<char>(MSGPACK_EMPTY_ARRAY) };
         }
         catch (...)
         {
                 char buf[256];
-                snprintf(buf, sizeof(buf), "SCRIPT ERROR: @%s: Unhandled non-standard exception in ref %d\n", m_resourceName.c_str(), refIdx);
+                snprintf(buf, sizeof(buf), "^1SCRIPT ERROR: @%s: Unhandled non-standard exception in ref %d^7\n", m_resourceName.c_str(), refIdx);
                 if (m_host.GetRef())
                         m_host->ScriptTrace(buf);
-                fprintf(stderr, "[citizen-scripting-cpp] %s", buf);
                 result = std::vector<char>{ static_cast<char>(MSGPACK_EMPTY_ARRAY) };
         }
         auto buf = fx::MakeNew<ScriptBuffer>(std::move(result));
@@ -1592,14 +1621,14 @@ result_t OM_DECL CppScriptRuntime::LoadFile(char* scriptFile)
                 root.pop_back();
         if (root.empty())
         {
-                fprintf(stderr, "[citizen-scripting-cpp] Could not get resource path for '%s'\n", m_resourceName.c_str());
+                LogError("Could not get resource path for '%s'", m_resourceName.c_str());
                 return FX_E_INVALIDARG;
         }
         {
                 fx::OMPtr<fxIStream> stream;
                 if (FX_FAILED(m_host->OpenHostFile(scriptFile, stream.GetAddressOf())) || !stream.GetRef())
                 {
-                        fprintf(stderr, "[citizen-scripting-cpp] Host denied access to '%s' in resource '%s'\n", scriptFile, m_resourceName.c_str());
+                        LogError("Host denied access to '%s' in resource '%s'", scriptFile, m_resourceName.c_str());
                         return FX_E_INVALIDARG;
                 }
         }
@@ -1609,12 +1638,37 @@ result_t OM_DECL CppScriptRuntime::LoadFile(char* scriptFile)
         std::string_view file(scriptFile);
         if (file.ends_with(".wasm"))
                 return loadWasm(resolvedPath);
-        fprintf(stderr, "[citizen-scripting-cpp] Unsupported file type for '%s' in resource '%s'\n", scriptFile, m_resourceName.c_str());
+        LogError("Unsupported file type for '%s' in resource '%s'", scriptFile, m_resourceName.c_str());
         return FX_E_INVALIDARG;
 }
 
-result_t OM_DECL CppScriptRuntime::WalkStack(char*, uint32_t, char*, uint32_t, IScriptStackWalkVisitor*)
+result_t OM_DECL CppScriptRuntime::WalkStack(char*, uint32_t, char*, uint32_t, IScriptStackWalkVisitor* visitor)
 {
+        if (!visitor)
+                return FX_S_OK;
+        std::vector<uint8_t> frame;
+        auto writeStr = [&](std::string_view s)
+        {
+                uint32_t n = static_cast<uint32_t>(s.size());
+                if (n <= 31)
+                        frame.push_back(0xA0 | static_cast<uint8_t>(n));
+                else
+                {
+                        frame.push_back(0xD9);
+                        frame.push_back(static_cast<uint8_t>(n));
+                }
+                frame.insert(frame.end(), s.begin(), s.end());
+        };
+        frame.push_back(0x84);
+        writeStr("name");
+        writeStr("[wasm]");
+        writeStr("file");
+        writeStr(m_resourceName);
+        writeStr("sourcefile");
+        writeStr("");
+        writeStr("line");
+        frame.push_back(0);
+        visitor->SubmitStackFrame(reinterpret_cast<char*>(frame.data()), static_cast<uint32_t>(frame.size()));
         return FX_S_OK;
 }
 
