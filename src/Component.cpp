@@ -1,9 +1,8 @@
 /*
- * Originally from the CitizenFX project - http://citizen.re/
- *
  * Copyright (c) 2017-2020 the CitizenFX Collective
- * Licensed under the GNU Lesser General Public License v2.0
- * https://github.com/citizenfx/fivem/blob/master/code/components/citizen-scripting-lua/src/Component.cpp
+ *
+ * ext/LICENSES/LGPL-2.0.txt
+ * https://github.com/citizenfx/fivem/blob/master/code/components/citizen-scripting-{core,lua,mono-v2,mono,node,v8}/src/Component.cpp
  */
 
 #include "../include/CppScriptRuntime.h"

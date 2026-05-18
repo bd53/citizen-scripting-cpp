@@ -26,7 +26,7 @@ namespace fx
 
 struct ProcessResult
 {
-        int32_t status; // bytes written on success, -1 permission denied, -2 error
+        int32_t status; // bytes written on success, -1 permission denied, -2 error, -3 timeout
         std::string output;
 };
 
@@ -42,6 +42,7 @@ struct ProcessResult
 #include <coroutine>
 #include <memory>
 #include <tuple>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 #include <functional>
@@ -678,7 +679,10 @@ class JsonObj
         }
         JsonObj& set(std::string_view key, uint64_t v)
         {
-                return set(key, static_cast<int64_t>(v));
+                char buf[21];
+                snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(v));
+                append(key, buf);
+                return *this;
         }
         JsonObj& set(std::string_view key, double value)
         {
@@ -791,6 +795,26 @@ namespace detail
                                                                 else if (h >= 'A' && h <= 'F')
                                                                         cp |= h - 'A' + 10;
                                                         }
+                                                        if (cp >= 0xD800 && cp <= 0xDBFF)
+                                                        {
+                                                                if (consume() == '\\' && consume() == 'u')
+                                                                {
+                                                                        unsigned lo = 0;
+                                                                        for (int i = 0; i < 4; ++i)
+                                                                        {
+                                                                                char h = consume();
+                                                                                lo <<= 4;
+                                                                                if (h >= '0' && h <= '9')
+                                                                                        lo |= h - '0';
+                                                                                else if (h >= 'a' && h <= 'f')
+                                                                                        lo |= h - 'a' + 10;
+                                                                                else if (h >= 'A' && h <= 'F')
+                                                                                        lo |= h - 'A' + 10;
+                                                                        }
+                                                                        if (lo >= 0xDC00 && lo <= 0xDFFF)
+                                                                                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                                                                }
+                                                        }
                                                         if (cp < 0x80)
                                                                 out += static_cast<char>(cp);
                                                         else if (cp < 0x800)
@@ -798,9 +822,16 @@ namespace detail
                                                                 out += static_cast<char>(0xC0 | (cp >> 6));
                                                                 out += static_cast<char>(0x80 | (cp & 0x3F));
                                                         }
-                                                        else
+                                                        else if (cp < 0x10000)
                                                         {
                                                                 out += static_cast<char>(0xE0 | (cp >> 12));
+                                                                out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                                                                out += static_cast<char>(0x80 | (cp & 0x3F));
+                                                        }
+                                                        else
+                                                        {
+                                                                out += static_cast<char>(0xF0 | (cp >> 18));
+                                                                out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
                                                                 out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
                                                                 out += static_cast<char>(0x80 | (cp & 0x3F));
                                                         }
@@ -1728,6 +1759,7 @@ inline int32_t onResourceStop(F&& handler)
 template<typename... TArgs>
 inline void trace(const char* fmt, TArgs&&... args)
 {
+        static_assert((... && (std::is_trivially_copyable_v<std::decay_t<TArgs>>)), "fx::trace arguments must be trivially copyable (use .c_str() for std::string)");
         if constexpr (sizeof...(args) == 0)
         {
                 if (fmt && fmt[0])
@@ -2387,7 +2419,16 @@ inline void createThread(F&& fn)
         auto task = (*stored)();
         auto& nextId = fxw_internal::nextCoroutineId();
         int32_t id = nextId;
-        if (++nextId <= 0)
+        int32_t start = id;
+        while (coros.count(id))
+        {
+                if (++id <= 0)
+                        id = 1;
+                if (id == start)
+                        return;
+        }
+        nextId = id + 1;
+        if (nextId <= 0)
                 nextId = 1;
         coros[id] = { task.handle, std::move(stored), std::chrono::steady_clock::now() };
         __fxcppScheduleBookmark(id, 0);
@@ -2436,11 +2477,18 @@ inline WorkerResult pollWorker(int32_t workerId, int32_t maxOutput = 65536)
 {
         WorkerResult result{ };
         std::string buf(static_cast<size_t>(maxOutput), '\0');
-        result.status = __fxcppPollWorker(workerId, buf.data(), maxOutput);
-        if (result.status > 0)
-                buf.resize(static_cast<size_t>(result.status));
+        int32_t raw = __fxcppPollWorker(workerId, buf.data(), maxOutput);
+        if (raw > 0)
+        {
+                result.status = raw;
+                size_t written = static_cast<size_t>(raw - 1);
+                buf.resize(written);
+        }
         else
+        {
+                result.status = raw;
                 buf.clear();
+        }
         result.output = std::move(buf);
         return result;
 }
@@ -3031,9 +3079,29 @@ inline ProcessResult spawnProcess(const std::string& command, size_t maxOutputBy
         }
         std::vector<std::string> envStrs;
         std::vector<char*> envp;
-        for (char** e = environ; e && *e; ++e)
-                if (strncmp(*e, "LD_LIBRARY_PATH=", 16) != 0)
-                        envStrs.push_back(*e);
+        {
+                std::string envBlob;
+                FILE* envFile = fopen("/proc/self/environ", "rb");
+                if (envFile)
+                {
+                        char tmp[4096];
+                        size_t n;
+                        while ((n = fread(tmp, 1, sizeof(tmp), envFile)) > 0)
+                                envBlob.append(tmp, n);
+                        fclose(envFile);
+                }
+                size_t pos = 0;
+                while (pos < envBlob.size())
+                {
+                        size_t end = envBlob.find('\0', pos);
+                        if (end == std::string::npos)
+                                end = envBlob.size();
+                        std::string_view entry(envBlob.data() + pos, end - pos);
+                        if (!entry.empty() && entry.substr(0, 16) != "LD_LIBRARY_PATH=")
+                                envStrs.emplace_back(entry);
+                        pos = end + 1;
+                }
+        }
         for (auto& s : envStrs)
                 envp.push_back(s.data());
         envp.push_back(nullptr);
@@ -3119,9 +3187,9 @@ inline ProcessResult spawnProcess(const std::string& command, size_t maxOutputBy
         }
         while (!result.output.empty() && result.output.back() == '\n')
                 result.output.pop_back();
-        if (timedOut && result.output.empty())
+        if (timedOut)
         {
-                result.status = -2;
+                result.status = -3;
                 return result;
         }
         result.status = static_cast<int32_t>(result.output.size());

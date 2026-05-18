@@ -228,9 +228,12 @@ static wasm_trap_t* CbInvokeNative(void* env, wasmtime_caller_t* caller, const w
                 if ((wctx.ptrMask >> i) & 1u)
                 {
                         uint32_t off = static_cast<uint32_t>(wctx.args[i]);
-                        if (off >= mem.sz)
+                        if (off == 0)
+                                hostCtx.arguments[i] = 0;
+                        else if (off >= mem.sz)
                                 return nullptr;
-                        hostCtx.arguments[i] = reinterpret_cast<uintptr_t>(mem.base + off);
+                        else
+                                hostCtx.arguments[i] = reinterpret_cast<uintptr_t>(mem.base + off);
                 }
                 else
                 {
@@ -646,7 +649,7 @@ struct ImportDesc
 };
 
 static const ImportDesc g_imports[] = {
-        { "trace", { WASM_I32, WASM_I32 }, { }, nullptr },
+        { "trace", { WASM_I32, WASM_I32 }, { }, CbTrace },
         { "invoke_native", { WASM_I32 }, { }, CbInvokeNative },
         { "copy_string_result", { WASM_I32, WASM_I32, WASM_I32, WASM_I32 }, { WASM_I32 }, CbCopyStringResult },
         { "emit_event", { WASM_I32, WASM_I32, WASM_I32, WASM_I32 }, { }, CbEmitEvent },
@@ -841,14 +844,21 @@ static wasm_trap_t* CbPollWorker(void* env, wasmtime_caller_t* caller, const was
                 results[0] = I32Val(-2);
                 return nullptr;
         }
-        auto& state = it->second;
-        std::lock_guard<std::mutex> lk(state->mutex);
-        if (state->status == CppScriptRuntime::WorkerState::Running)
+        auto state = it->second;
+        CppScriptRuntime::WorkerState::Status status;
+        std::vector<char> workerResult;
+        {
+                std::lock_guard<std::mutex> lk(state->mutex);
+                status = state->status;
+                if (status == CppScriptRuntime::WorkerState::Done)
+                        workerResult = state->result;
+        }
+        if (status == CppScriptRuntime::WorkerState::Running)
         {
                 results[0] = I32Val(0);
                 return nullptr;
         }
-        if (state->status == CppScriptRuntime::WorkerState::Error)
+        if (status == CppScriptRuntime::WorkerState::Error)
         {
                 if (state->thread.joinable())
                         state->thread.join();
@@ -862,15 +872,16 @@ static wasm_trap_t* CbPollWorker(void* env, wasmtime_caller_t* caller, const was
         int32_t outMax = args[2].of.i32;
         if (mem.init(caller) && outMax > 0 && mem.check(outBuf, static_cast<size_t>(outMax)))
         {
-                size_t copy = std::min<size_t>(state->result.size(), static_cast<size_t>(outMax) - 1);
-                memcpy(mem.base + outBuf, state->result.data(), copy);
+                size_t copy = std::min<size_t>(workerResult.size(), static_cast<size_t>(outMax) - 1);
+                if (copy > 0)
+                        memcpy(mem.base + outBuf, workerResult.data(), copy);
                 mem.base[outBuf + copy] = '\0';
                 written = static_cast<int32_t>(copy);
         }
         if (state->thread.joinable())
                 state->thread.join();
         rt->m_workers.erase(it);
-        results[0] = I32Val(written > 0 ? written : 1);
+        results[0] = I32Val(written >= 0 ? written + 1 : 1);
         return nullptr;
 }
 
@@ -1192,9 +1203,8 @@ void CppScriptRuntime::defineImports()
 {
         for (const auto& imp : g_imports)
         {
-                auto cb = imp.hostCb ? imp.hostCb : CbTrace;
                 auto* ft = MakeFuncType(imp.params, imp.results);
-                auto* err = wasmtime_linker_define_func(m_linker, "fxcpp", 5, imp.name, strlen(imp.name), ft, cb, this, nullptr);
+                auto* err = wasmtime_linker_define_func(m_linker, "fxcpp", 5, imp.name, strlen(imp.name), ft, imp.hostCb, this, nullptr);
                 wasm_functype_delete(ft);
                 if (err)
                         fprintf(stderr, "[citizen-scripting-cpp] failed to define import '%s': %s\n", imp.name, wasmErrMsg(err, nullptr).c_str());
