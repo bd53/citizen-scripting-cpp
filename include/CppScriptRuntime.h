@@ -334,10 +334,10 @@ struct Reader
         }
         std::string str(uint32_t n)
         {
-                if (p + n > end)
+                if (n > static_cast<size_t>(end - p))
                 {
                         error = true;
-                        n = (uint32_t)(end - p);
+                        n = static_cast<uint32_t>(end - p);
                 }
                 std::string s((const char*)p, n);
                 p += n;
@@ -509,10 +509,18 @@ struct Reader
                                 v.numVal = std::bit_cast<double>(u64());
                                 return v;
                         case 0xDC:
+                        {
+                                uint32_t n = u16();
+                                if (n > MAX_CONTAINER_ELEMENTS)
+                                {
+                                        error = true;
+                                        return { };
+                                }
                                 v.kind = Value::Kind::Array;
-                                for (uint32_t i = 0, n = u16(); i < n; ++i)
+                                for (uint32_t i = 0; i < n; ++i)
                                         v.children.push_back(read(d + 1));
                                 return v;
+                        }
                         case 0xDD:
                         {
                                 uint32_t n = u32();
@@ -1334,7 +1342,7 @@ struct Context
         void dispatchStop()
         {
                 for (auto& h : stops)
-                        h();
+                        safeInvoke(h, resourceName.c_str(), "stop handler");
         }
         void dispatchEvent(const char* name, uint32_t nameLen, const uint8_t* args, uint32_t argsLen, const char* src, uint32_t srcLen)
         {
@@ -2355,8 +2363,7 @@ inline void resumeCoroutines()
         if (coros.empty())
                 return;
         auto now = std::chrono::steady_clock::now();
-        static std::vector<int32_t> ready;
-        ready.clear();
+        std::vector<int32_t> ready;
         for (auto& [id, entry] : coros)
                 if (now >= entry.resumeAt)
                         ready.push_back(id);

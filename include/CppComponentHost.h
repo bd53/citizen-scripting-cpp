@@ -186,6 +186,7 @@ class OMPtr
         }
         T** GetAddressOf()
         {
+                assert(!m_ref && "GetAddressOf() on non-empty OMPtr leaks the existing ref");
                 return &m_ref;
         }
         T** ReleaseAndGetAddressOf()
@@ -199,6 +200,8 @@ class OMPtr
         }
         result_t CopyTo(T** ptr) const
         {
+                if (!ptr)
+                        return FX_E_INVALIDARG;
                 if (m_ref)
                         m_ref->AddRef();
                 *ptr = m_ref;
@@ -239,9 +242,9 @@ class OMClass : public TInterfaces...
 
     public:
         template<typename TNew, typename... TArg>
-        friend OMPtr<TNew> MakeNew(TArg...);
+        friend OMPtr<TNew> MakeNew(TArg&&...);
         template<typename TNew, typename... TArg>
-        friend fxIBase* MakeNewBase(TArg...);
+        friend fxIBase* MakeNewBase(TArg&&...);
         virtual result_t OM_DECL QueryInterface(const guid_t& riid, void** outObject) override
         {
                 result_t res = FX_E_NOINTERFACE;
@@ -291,17 +294,17 @@ class OMClass : public TInterfaces...
 };
 
 template<typename TClass, typename... TArg>
-inline OMPtr<TClass> MakeNew(TArg... args)
+inline OMPtr<TClass> MakeNew(TArg&&... args)
 {
-        TClass* inst = new (fwAlloc(sizeof(TClass))) TClass(args...);
+        TClass* inst = new (fwAlloc(sizeof(TClass))) TClass(std::forward<TArg>(args)...);
         OMPtr<TClass> ret(inst);
         return ret;
 }
 
 template<typename TClass, typename... TArg>
-inline fxIBase* MakeNewBase(TArg... args)
+inline fxIBase* MakeNewBase(TArg&&... args)
 {
-        TClass* inst = new (fwAlloc(sizeof(TClass))) TClass(args...);
+        TClass* inst = new (fwAlloc(sizeof(TClass))) TClass(std::forward<TArg>(args)...);
         inst->AddRef();
         return inst->GetBaseRef();
 }
