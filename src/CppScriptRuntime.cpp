@@ -1034,11 +1034,6 @@ void CppScriptRuntime::scheduleWasmBookmark(int32_t wasmId, int32_t deadlineMs)
         m_bookmarkHost->ScheduleBookmark(static_cast<IScriptTickRuntimeWithBookmarks*>(this), hostId, deadline);
 }
 
-std::string CppScriptRuntime::wasmErrMsg(wasmtime_error_t* err, wasm_trap_t* trap)
-{
-        return ExtractWasmError(err, trap);
-}
-
 uint8_t* CppScriptRuntime::wasmBase()
 {
         if (!m_hasMemory || !m_store)
@@ -1213,7 +1208,7 @@ void CppScriptRuntime::defineImports()
                 auto* err = wasmtime_linker_define_func(m_linker, "fxcpp", 5, imp.name, strlen(imp.name), ft, imp.hostCb, this, nullptr);
                 wasm_functype_delete(ft);
                 if (err)
-                        LogError("failed to define import '%s': %s", imp.name, wasmErrMsg(err, nullptr).c_str());
+                        LogError("failed to define import '%s': %s", imp.name, ExtractWasmError(err, nullptr).c_str());
         }
 }
 
@@ -1312,11 +1307,11 @@ result_t CppScriptRuntime::loadWasm(const std::vector<uint8_t>& wasmBytes, const
         {
                 auto* err = wasmtime_linker_define_wasi(m_linker);
                 if (err)
-                        LogWarning("WASI linker error in '%s': %s", m_resourceName.c_str(), wasmErrMsg(err, nullptr).c_str());
+                        LogWarning("WASI linker error in '%s': %s", m_resourceName.c_str(), ExtractWasmError(err, nullptr).c_str());
                 wasi_config_t* wasi = wasi_config_new();
                 auto* werr = wasmtime_context_set_wasi(wasmtime_store_context(m_store), wasi);
                 if (werr)
-                        LogWarning("WASI context error in '%s': %s", m_resourceName.c_str(), wasmErrMsg(werr, nullptr).c_str());
+                        LogWarning("WASI context error in '%s': %s", m_resourceName.c_str(), ExtractWasmError(werr, nullptr).c_str());
         }
         defineImports();
         wasmtime_context_set_fuel(wasmtime_store_context(m_store), WASM_FUEL_AMOUNT);
@@ -1324,7 +1319,7 @@ result_t CppScriptRuntime::loadWasm(const std::vector<uint8_t>& wasmBytes, const
                 wasmtime_error_t* err = wasmtime_module_new(engine(), wasmBytes.data(), wasmBytes.size(), &m_module);
                 if (err)
                 {
-                        LogError("Compile error in '%s': %s", sourcePath.c_str(), wasmErrMsg(err, nullptr).c_str());
+                        LogError("Compile error in '%s': %s", sourcePath.c_str(), ExtractWasmError(err, nullptr).c_str());
                         destroyWasm();
                         return FX_E_INVALIDARG;
                 }
@@ -1334,7 +1329,7 @@ result_t CppScriptRuntime::loadWasm(const std::vector<uint8_t>& wasmBytes, const
                 auto* err = wasmtime_linker_instantiate(m_linker, wasmtime_store_context(m_store), m_module, &m_instance, &trap);
                 if (err || trap)
                 {
-                        LogError("Instantiate error in '%s': %s", sourcePath.c_str(), wasmErrMsg(err, trap).c_str());
+                        LogError("Instantiate error in '%s': %s", sourcePath.c_str(), ExtractWasmError(err, trap).c_str());
                         destroyWasm();
                         return FX_E_INVALIDARG;
                 }
@@ -1608,45 +1603,17 @@ result_t OM_DECL CppScriptRuntime::WalkStack(char*, uint32_t, char*, uint32_t, I
 {
         if (!visitor)
                 return FX_S_OK;
-        std::vector<uint8_t> frame;
-        auto writeStr = [&](std::string_view s)
-        {
-                uint32_t n = static_cast<uint32_t>(s.size());
-                if (n <= 31)
-                {
-                        frame.push_back(0xA0 | static_cast<uint8_t>(n));
-                }
-                else if (n <= 255)
-                {
-                        frame.push_back(0xD9);
-                        frame.push_back(static_cast<uint8_t>(n));
-                }
-                else if (n <= 65535)
-                {
-                        frame.push_back(0xDA);
-                        frame.push_back(static_cast<uint8_t>(n >> 8));
-                        frame.push_back(static_cast<uint8_t>(n & 0xFF));
-                }
-                else
-                {
-                        frame.push_back(0xDB);
-                        frame.push_back(static_cast<uint8_t>((n >> 24) & 0xFF));
-                        frame.push_back(static_cast<uint8_t>((n >> 16) & 0xFF));
-                        frame.push_back(static_cast<uint8_t>((n >> 8) & 0xFF));
-                        frame.push_back(static_cast<uint8_t>(n & 0xFF));
-                }
-                frame.insert(frame.end(), s.begin(), s.end());
-        };
-        frame.push_back(0x84);
-        writeStr("name");
-        writeStr("[wasm]");
-        writeStr("file");
-        writeStr(m_resourceName);
-        writeStr("sourcefile");
-        writeStr("");
-        writeStr("line");
-        frame.push_back(0);
-        visitor->SubmitStackFrame(reinterpret_cast<char*>(frame.data()), static_cast<uint32_t>(frame.size()));
+        fx::MsgpackWriter w;
+        w.mapHeader(4);
+        w.str("name");
+        w.str("[wasm]");
+        w.str("file");
+        w.str(m_resourceName);
+        w.str("sourcefile");
+        w.str("");
+        w.str("line");
+        w.encInt(0);
+        visitor->SubmitStackFrame(reinterpret_cast<char*>(w.buf.data()), static_cast<uint32_t>(w.buf.size()));
         return FX_S_OK;
 }
 

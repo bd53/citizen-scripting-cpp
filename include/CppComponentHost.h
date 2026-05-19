@@ -366,7 +366,6 @@ struct OMImplementsDef
         }
 
 #include <chrono>
-#include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -757,7 +756,7 @@ public:
 namespace fx
 {
 
-inline fx::OMPtr<IScriptRuntimeHandler> GetRuntimeHandler()
+inline const fx::OMPtr<IScriptRuntimeHandler>& GetRuntimeHandler()
 {
         static fx::OMPtr<IScriptRuntimeHandler> h;
         static std::once_flag flag;
@@ -805,7 +804,7 @@ class PushEnvironment
 
 inline result_t GetCurrentScriptRuntime(fx::OMPtr<IScriptRuntime>* out)
 {
-        auto h = GetRuntimeHandler();
+        const auto& h = GetRuntimeHandler();
         if (!h.GetRef())
                 return FX_E_NOTIMPL;
         return h->GetCurrentRuntime(out->ReleaseAndGetAddressOf());

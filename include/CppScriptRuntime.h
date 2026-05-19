@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
+#include <vector>
 
 inline constexpr uint32_t HashString(std::string_view str)
 {
@@ -59,6 +61,125 @@ inline int32_t allocateId(int32_t& nextId, const Container& used)
                 nextId = 1;
         return id;
 }
+
+struct MsgpackWriter
+{
+        std::vector<uint8_t> buf;
+        void pu8(uint8_t v)
+        {
+                buf.push_back(v);
+        }
+        void pu16(uint16_t v)
+        {
+                buf.push_back(v >> 8);
+                buf.push_back(v & 0xFF);
+        }
+        void pu32(uint32_t v)
+        {
+                pu16(v >> 16);
+                pu16(v & 0xFFFF);
+        }
+        void str(std::string_view s)
+        {
+                uint32_t n = (uint32_t)s.size();
+                if (n <= 31)
+                        pu8(0xA0 | (uint8_t)n);
+                else if (n <= 255)
+                {
+                        pu8(0xD9);
+                        pu8((uint8_t)n);
+                }
+                else if (n <= 65535)
+                {
+                        pu8(0xDA);
+                        pu16((uint16_t)n);
+                }
+                else
+                {
+                        pu8(0xDB);
+                        pu32(n);
+                }
+                buf.insert(buf.end(), s.begin(), s.end());
+        }
+        void arrayHeader(uint32_t n)
+        {
+                if (n <= 15)
+                        pu8(0x90 | (uint8_t)n);
+                else if (n <= 65535)
+                {
+                        pu8(0xDC);
+                        pu16((uint16_t)n);
+                }
+                else
+                {
+                        pu8(0xDD);
+                        pu32(n);
+                }
+        }
+        void mapHeader(uint32_t n)
+        {
+                if (n <= 15)
+                        pu8(0x80 | (uint8_t)n);
+                else if (n <= 65535)
+                {
+                        pu8(0xDE);
+                        pu16((uint16_t)n);
+                }
+                else
+                {
+                        pu8(0xDF);
+                        pu32(n);
+                }
+        }
+        void encNull()
+        {
+                pu8(0xC0);
+        }
+        void encBool(bool v)
+        {
+                pu8(v ? 0xC3 : 0xC2);
+        }
+        void encInt(int64_t v)
+        {
+                if (v >= 0 && v <= 127)
+                {
+                        pu8((uint8_t)v);
+                }
+                else if (v < 0 && v >= -32)
+                {
+                        pu8((uint8_t)(int8_t)v);
+                }
+                else if (v >= -128 && v <= 127)
+                {
+                        pu8(0xD0);
+                        pu8((uint8_t)(int8_t)v);
+                }
+                else if (v >= -32768 && v <= 32767)
+                {
+                        pu8(0xD1);
+                        pu16((uint16_t)(int16_t)v);
+                }
+                else if (v >= -2147483648LL && v <= 2147483647LL)
+                {
+                        pu8(0xD2);
+                        pu32((uint32_t)(int32_t)v);
+                }
+                else
+                {
+                        pu8(0xD3);
+                        pu32((uint32_t)((uint64_t)v >> 32));
+                        pu32((uint32_t)v);
+                }
+        }
+        void encDouble(double d)
+        {
+                uint64_t bits;
+                memcpy(&bits, &d, 8);
+                pu8(0xCB);
+                for (int i = 7; i >= 0; --i)
+                        pu8((bits >> (i * 8)) & 0xFF);
+        }
+};
 
 }
 
@@ -441,123 +562,8 @@ inline void ensureArray(Value& v)
         }
 }
 
-struct Writer
+struct Writer : fx::MsgpackWriter
 {
-        std::vector<uint8_t> buf;
-        void pu8(uint8_t v)
-        {
-                buf.push_back(v);
-        }
-        void pu16(uint16_t v)
-        {
-                buf.push_back(v >> 8);
-                buf.push_back(v & 0xFF);
-        }
-        void pu32(uint32_t v)
-        {
-                pu16(v >> 16);
-                pu16(v & 0xFFFF);
-        }
-        void str(std::string_view s)
-        {
-                uint32_t n = (uint32_t)s.size();
-                if (n <= 31)
-                        pu8(0xA0 | (uint8_t)n);
-                else if (n <= 255)
-                {
-                        pu8(0xD9);
-                        pu8((uint8_t)n);
-                }
-                else if (n <= 65535)
-                {
-                        pu8(0xDA);
-                        pu16((uint16_t)n);
-                }
-                else
-                {
-                        pu8(0xDB);
-                        pu32(n);
-                }
-                buf.insert(buf.end(), s.begin(), s.end());
-        }
-        void arrayHeader(uint32_t n)
-        {
-                if (n <= 15)
-                        pu8(0x90 | (uint8_t)n);
-                else if (n <= 65535)
-                {
-                        pu8(0xDC);
-                        pu16((uint16_t)n);
-                }
-                else
-                {
-                        pu8(0xDD);
-                        pu32(n);
-                }
-        }
-        void mapHeader(uint32_t n)
-        {
-                if (n <= 15)
-                        pu8(0x80 | (uint8_t)n);
-                else if (n <= 65535)
-                {
-                        pu8(0xDE);
-                        pu16((uint16_t)n);
-                }
-                else
-                {
-                        pu8(0xDF);
-                        pu32(n);
-                }
-        }
-        void encNull()
-        {
-                pu8(0xC0);
-        }
-        void encBool(bool v)
-        {
-                pu8(v ? 0xC3 : 0xC2);
-        }
-        void encInt(int64_t v)
-        {
-                if (v >= 0 && v <= 127)
-                {
-                        pu8((uint8_t)v);
-                }
-                else if (v < 0 && v >= -32)
-                {
-                        pu8((uint8_t)(int8_t)v);
-                }
-                else if (v >= -128 && v <= 127)
-                {
-                        pu8(0xD0);
-                        pu8((uint8_t)(int8_t)v);
-                }
-                else if (v >= -32768 && v <= 32767)
-                {
-                        pu8(0xD1);
-                        pu16((uint16_t)(int16_t)v);
-                }
-                else if (v >= -2147483648LL && v <= 2147483647LL)
-                {
-                        pu8(0xD2);
-                        pu32((uint32_t)(int32_t)v);
-                }
-                else
-                {
-                        pu8(0xD3);
-                        pu32((uint32_t)((uint64_t)v >> 32));
-                        pu32((uint32_t)v);
-                }
-        }
-        void encDouble(double d)
-        {
-                uint64_t bits;
-                memcpy(&bits, &d, 8);
-                pu8(0xCB);
-                for (int i = 7; i >= 0; --i)
-                        pu8((bits >> (i * 8)) & 0xFF);
-        }
         void encValue(const Value& v)
         {
                 switch (v.kind)
@@ -793,6 +799,22 @@ namespace detail
                         }
                         return true;
                 }
+                unsigned parseHex4()
+                {
+                        unsigned val = 0;
+                        for (int i = 0; i < 4; ++i)
+                        {
+                                char h = consume();
+                                val <<= 4;
+                                if (h >= '0' && h <= '9')
+                                        val |= h - '0';
+                                else if (h >= 'a' && h <= 'f')
+                                        val |= h - 'a' + 10;
+                                else if (h >= 'A' && h <= 'F')
+                                        val |= h - 'A' + 10;
+                        }
+                        return val;
+                }
                 std::string parseString()
                 {
                         if (!expect('"'))
@@ -828,35 +850,13 @@ namespace detail
                                                         break;
                                                 case 'u':
                                                 {
-                                                        unsigned cp = 0;
-                                                        for (int i = 0; i < 4; ++i)
-                                                        {
-                                                                char h = consume();
-                                                                cp <<= 4;
-                                                                if (h >= '0' && h <= '9')
-                                                                        cp |= h - '0';
-                                                                else if (h >= 'a' && h <= 'f')
-                                                                        cp |= h - 'a' + 10;
-                                                                else if (h >= 'A' && h <= 'F')
-                                                                        cp |= h - 'A' + 10;
-                                                        }
+                                                        unsigned cp = parseHex4();
                                                         if (cp >= 0xD800 && cp <= 0xDBFF)
                                                         {
                                                                 if (pos + 6 <= src.size() && src[pos] == '\\' && src[pos + 1] == 'u')
                                                                 {
                                                                         pos += 2;
-                                                                        unsigned lo = 0;
-                                                                        for (int i = 0; i < 4; ++i)
-                                                                        {
-                                                                                char h = consume();
-                                                                                lo <<= 4;
-                                                                                if (h >= '0' && h <= '9')
-                                                                                        lo |= h - '0';
-                                                                                else if (h >= 'a' && h <= 'f')
-                                                                                        lo |= h - 'a' + 10;
-                                                                                else if (h >= 'A' && h <= 'F')
-                                                                                        lo |= h - 'A' + 10;
-                                                                        }
+                                                                        unsigned lo = parseHex4();
                                                                         if (lo >= 0xDC00 && lo <= 0xDFFF)
                                                                                 cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
                                                                         else
@@ -1248,6 +1248,29 @@ struct TimerEntry
         std::function<void()> callback;
 };
 
+template<typename F>
+inline void safeInvoke(F&& fn, const char* resourceName, const char* context)
+{
+#if __cpp_exceptions
+        try
+        {
+                fn();
+        }
+        catch (const std::exception& e)
+        {
+                fprintf(stderr, "[script:%s] Unhandled exception in %s: %s\n", resourceName, context, e.what());
+        }
+        catch (...)
+        {
+                fprintf(stderr, "[script:%s] Unhandled non-standard exception in %s\n", resourceName, context);
+        }
+#else
+        (void)resourceName;
+        (void)context;
+        fn();
+#endif
+}
+
 struct EventHandlerEntry
 {
         int32_t id;
@@ -1300,43 +1323,13 @@ struct Context
                         }
                         else
                                 timers.erase(it);
-#if __cpp_exceptions
-                        try
-                        {
-                                cb();
-                        }
-                        catch (const std::exception& e)
-                        {
-                                fprintf(stderr, "[script:%s] Unhandled exception in timer %d: %s\n", resourceName.c_str(), id, e.what());
-                        }
-                        catch (...)
-                        {
-                                fprintf(stderr, "[script:%s] Unhandled non-standard exception in timer %d\n", resourceName.c_str(), id);
-                        }
-#else
-                        cb();
-#endif
+                        char timerCtx[32];
+                        snprintf(timerCtx, sizeof(timerCtx), "timer %d", id);
+                        safeInvoke(cb, resourceName.c_str(), timerCtx);
                 }
                 auto tickSnapshot = ticks;
                 for (auto& h : tickSnapshot)
-                {
-#if __cpp_exceptions
-                        try
-                        {
-                                h();
-                        }
-                        catch (const std::exception& e)
-                        {
-                                fprintf(stderr, "[script:%s] Unhandled exception in tick handler: %s\n", resourceName.c_str(), e.what());
-                        }
-                        catch (...)
-                        {
-                                fprintf(stderr, "[script:%s] Unhandled non-standard exception in tick handler\n", resourceName.c_str());
-                        }
-#else
-                        h();
-#endif
-                }
+                        safeInvoke(h, resourceName.c_str(), "tick handler");
         }
         void dispatchStop()
         {
@@ -1359,24 +1352,11 @@ struct Context
                 ensureArray(decoded);
                 fx::EventArgs ea(std::move(decoded));
                 auto handlers = it->second;
+                char eventCtx[256];
+                snprintf(eventCtx, sizeof(eventCtx), "event '%s'", key.c_str());
                 for (auto& entry : handlers)
                 {
-#if __cpp_exceptions
-                        try
-                        {
-                                entry.handler(srcStr, ea);
-                        }
-                        catch (const std::exception& e)
-                        {
-                                fprintf(stderr, "[script:%s] Unhandled exception in event '%s': %s\n", resourceName.c_str(), key.c_str(), e.what());
-                        }
-                        catch (...)
-                        {
-                                fprintf(stderr, "[script:%s] Unhandled non-standard exception in event '%s'\n", resourceName.c_str(), key.c_str());
-                        }
-#else
-                        entry.handler(srcStr, ea);
-#endif
+                        safeInvoke([&] { entry.handler(srcStr, ea); }, resourceName.c_str(), eventCtx);
                         if (__fxcppWasEventCanceled())
                                 break;
                 }
@@ -2184,17 +2164,7 @@ inline void performHttpRequest(const std::string& url, HttpCallback cb, const st
                         int status = args.get<int>(1);
                         std::string body = args.str(2);
                         std::string respHeaders = args.str(3);
-#if __cpp_exceptions
-                        try
-                        {
-                                userCb(status, body, respHeaders);
-                        }
-                        catch (...)
-                        {
-                        }
-#else
-                        userCb(status, body, respHeaders);
-#endif
+                        fxw_internal::safeInvoke([&] { userCb(status, body, respHeaders); }, ctx->resourceName.c_str(), "http callback");
                 });
         }
 }
@@ -2364,18 +2334,7 @@ inline void resumeCoroutineById(int32_t id)
                 if (handle.promise().exception)
                 {
                         const char* rn = currentContext() ? currentContext()->resourceName.c_str() : "?";
-                        try
-                        {
-                                std::rethrow_exception(handle.promise().exception);
-                        }
-                        catch (const std::exception& e)
-                        {
-                                fprintf(stderr, "[script:%s] Unhandled exception in thread: %s\n", rn, e.what());
-                        }
-                        catch (...)
-                        {
-                                fprintf(stderr, "[script:%s] Unhandled non-standard exception in thread\n", rn);
-                        }
+                        safeInvoke([&] { std::rethrow_exception(handle.promise().exception); }, rn, "thread");
                 }
 #endif
                 handle.destroy();
@@ -2819,7 +2778,6 @@ public:
         void defineImports();
         bool resolveExports();
         void destroyWasm();
-        std::string wasmErrMsg(wasmtime_error_t* err, wasm_trap_t* trap);
         result_t loadWasm(const std::vector<uint8_t>& wasmBytes, const std::string& sourcePath);
 };
 
