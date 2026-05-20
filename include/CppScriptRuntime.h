@@ -325,7 +325,7 @@ struct Reader
         uint32_t u32()
         {
                 uint16_t a = u16(), b = u16();
-                return (uint32_t)(a << 16 | b);
+                return (uint32_t)((uint32_t)a << 16 | b);
         }
         uint64_t u64()
         {
@@ -863,6 +863,12 @@ namespace detail
                                                         break;
                                                 case '/':
                                                         out += '/';
+                                                        break;
+                                                case 'b':
+                                                        out += '\b';
+                                                        break;
+                                                case 'f':
+                                                        out += '\f';
                                                         break;
                                                 case 'n':
                                                         out += '\n';
@@ -2594,7 +2600,7 @@ int32_t __cfxDuplicateRef(int32_t callback_id)
 }
 
 CFX_WASM_EXPORT(__cfx_remove_ref)
-void __cfxRemoveRef(int32_t callback_id)
+void __cfxRemoveRefCallback(int32_t callback_id)
 {
         auto& counts = fxw_internal::refCounts();
         auto it = counts.find(callback_id);
@@ -2688,7 +2694,8 @@ class CppScriptRuntime final : public fx::OMClass<CppScriptRuntime, IScriptRunti
         friend wasm_trap_t* ::CbCreateRef(void*, wasmtime_caller_t*, const wasmtime_val_t*, size_t, wasmtime_val_t*, size_t);
         friend wasm_trap_t* ::CbCreateWorker(void*, wasmtime_caller_t*, const wasmtime_val_t*, size_t, wasmtime_val_t*, size_t);
         friend wasm_trap_t* ::CbPollWorker(void*, wasmtime_caller_t*, const wasmtime_val_t*, size_t, wasmtime_val_t*, size_t);
-public:
+
+    public:
         CppScriptRuntime();
         ~CppScriptRuntime();
         result_t OM_DECL Create(IScriptHost* host) override;
@@ -2806,14 +2813,12 @@ public:
         bool m_hasRemoveRefFn = false;
         bool m_hasHasPendingWorkFn = false;
         std::unordered_map<int32_t, int32_t> m_refToCallbackId;
-
         std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
         bool m_eventCanceled = false;
         bool m_hasValidNativeResult = false;
         fxNativeContext m_lastNativeCtx{ };
         uint32_t m_lastResultPtrMask = 0;
         int32_t m_lastSpawnExitCode = 0;
-
         wasmtime_func_t m_fnTickBookmarks{ };
         bool m_hasTickBookmarksFn = false;
         std::unordered_map<int32_t, uint64_t> m_wasmToHostBookmark;
