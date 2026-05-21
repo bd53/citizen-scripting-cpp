@@ -213,6 +213,7 @@ struct Value
                 Bool,
                 Number,
                 String,
+                Bin,
                 Array,
                 Object,
                 FuncRef
@@ -432,20 +433,35 @@ struct Reader
                                 v.boolVal = true;
                                 return v;
                         case 0xC4:
+                        {
+                                v.kind = Value::Kind::Bin;
+                                v.scalar = str(u8());
+                                return v;
+                        }
+                        case 0xC5:
+                        {
+                                v.kind = Value::Kind::Bin;
+                                v.scalar = str(u16());
+                                return v;
+                        }
+                        case 0xC6:
+                        {
+                                v.kind = Value::Kind::Bin;
+                                v.scalar = str(u32());
+                                return v;
+                        }
                         case 0xD9:
                         {
                                 v.kind = Value::Kind::String;
                                 v.scalar = str(u8());
                                 return v;
                         }
-                        case 0xC5:
                         case 0xDA:
                         {
                                 v.kind = Value::Kind::String;
                                 v.scalar = str(u16());
                                 return v;
                         }
-                        case 0xC6:
                         case 0xDB:
                         {
                                 v.kind = Value::Kind::String;
@@ -594,6 +610,27 @@ struct Writer : fx::MsgpackWriter
                         case Value::Kind::String:
                                 str(v.scalar);
                                 break;
+                        case Value::Kind::Bin:
+                        {
+                                uint32_t n = (uint32_t)v.scalar.size();
+                                if (n <= 255)
+                                {
+                                        pu8(0xC4);
+                                        pu8((uint8_t)n);
+                                }
+                                else if (n <= 65535)
+                                {
+                                        pu8(0xC5);
+                                        pu16((uint16_t)n);
+                                }
+                                else
+                                {
+                                        pu8(0xC6);
+                                        pu32(n);
+                                }
+                                buf.insert(buf.end(), v.scalar.begin(), v.scalar.end());
+                                break;
+                        }
                         case Value::Kind::FuncRef:
                         {
                                 uint32_t n = (uint32_t)v.scalar.size();
@@ -655,6 +692,17 @@ inline void encodeOne(Writer& w, T&& v)
                 w.encValue(v);
         else if constexpr (std::is_floating_point_v<D>)
                 w.encDouble((double)v);
+        else if constexpr (std::is_unsigned_v<D> && sizeof(D) == 8)
+        {
+                if (v <= static_cast<uint64_t>(INT64_MAX))
+                        w.encInt(static_cast<int64_t>(v));
+                else
+                {
+                        w.pu8(0xCF);
+                        w.pu32(static_cast<uint32_t>(v >> 32));
+                        w.pu32(static_cast<uint32_t>(v));
+                }
+        }
         else if constexpr (std::is_integral_v<D>)
                 w.encInt((int64_t)v);
         else
@@ -832,6 +880,8 @@ namespace detail
                                         val |= h - 'a' + 10;
                                 else if (h >= 'A' && h <= 'F')
                                         val |= h - 'A' + 10;
+                                else
+                                        error = true;
                         }
                         return val;
                 }
@@ -1094,7 +1144,11 @@ inline Value parse(std::string_view json)
 {
         detail::Parser p{ json, 0, false };
         auto v = p.parseValue();
-        return p.error ? Value{ } : v;
+        if (!p.error)
+                p.skipWs();
+        if (p.error || p.pos != p.src.size())
+                return { };
+        return v;
 }
 
 }

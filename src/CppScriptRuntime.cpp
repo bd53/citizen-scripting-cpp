@@ -1,6 +1,7 @@
 #include "../include/CppScriptRuntime.h"
 #include "SDK.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -125,10 +126,19 @@ static const std::string& GetEmbeddedSdkPath()
         static std::once_flag flag;
         std::call_once(flag, []
         {
-                path = "/tmp/citizen-scripting-cpp";
-                mkdir(path.c_str(), 0755);
-                mkdir((path + "/include").c_str(), 0755);
-                mkdir((path + "/src").c_str(), 0755);
+                char tmpl[] = "/tmp/citizen-scripting-cpp-XXXXXX";
+                char* dir = mkdtemp(tmpl);
+                if (!dir)
+                {
+                        path = "/tmp/citizen-scripting-cpp-fallback";
+                        mkdir(path.c_str(), 0700);
+                }
+                else
+                {
+                        path = dir;
+                }
+                mkdir((path + "/include").c_str(), 0700);
+                mkdir((path + "/src").c_str(), 0700);
                 WriteFileFromMemory(path + "/include/CppScriptRuntime.h", kEmbeddedCppScriptRuntimeH, kEmbeddedCppScriptRuntimeH_len);
                 WriteFileFromMemory(path + "/src/DB.h", kEmbeddedDBH, kEmbeddedDBH_len);
         });
@@ -1629,6 +1639,7 @@ result_t OM_DECL CppScriptRuntime::TickBookmarks(uint64_t* bookmarks, int32_t nu
         if (wasmIds.empty())
                 return FX_S_OK;
         uint32_t arrSize = static_cast<uint32_t>(wasmIds.size() * sizeof(int32_t));
+        refuelWasm();
         uint32_t arrPtr = wasmAlloc(arrSize);
         if (!arrPtr)
                 return FX_S_OK;
@@ -1642,7 +1653,6 @@ result_t OM_DECL CppScriptRuntime::TickBookmarks(uint64_t* bookmarks, int32_t nu
         memcpy(base + arrPtr, wasmIds.data(), arrSize);
         fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
         BoundaryGuard boundary(m_host.GetRef(), static_cast<int64_t>(nextBoundaryId()));
-        refuelWasm();
         wasmtime_val_t args[2] = { I32Val(static_cast<int32_t>(arrPtr)), I32Val(static_cast<int32_t>(wasmIds.size())) };
         WasmCall(m_store, m_fnTickBookmarks, args, 2, nullptr, 0, m_resourceName.c_str(), "tick_bookmarks trap");
         wasmFree(arrPtr, arrSize);
@@ -1670,6 +1680,7 @@ result_t OM_DECL CppScriptRuntime::TriggerEvent(char* eventName, char* argsSeria
         uint32_t argsAllocSz = static_cast<uint32_t>(argsAllocSz64);
         uint32_t srcAllocSz = static_cast<uint32_t>(srcAllocSz64);
         uint32_t totalSz = static_cast<uint32_t>(totalSz64);
+        refuelWasm();
         uint32_t block = wasmAlloc(totalSz);
         if (!block)
                 return FX_S_OK;
@@ -1689,7 +1700,6 @@ result_t OM_DECL CppScriptRuntime::TriggerEvent(char* eventName, char* argsSeria
                 memcpy(base + argsWasm, argsSerialized, serializedSize);
         memcpy(base + srcWasm, src.data(), src.size());
         base[srcWasm + src.size()] = '\0';
-        refuelWasm();
         if (!callEvent(nameWasm, static_cast<uint32_t>(name.size()), argsWasm, serializedSize, srcWasm, static_cast<uint32_t>(src.size())) && m_host.GetRef())
         {
                 std::string msg = "^1SCRIPT ERROR: @" + m_resourceName + ": WASM trap in event '" + eventName + "'^7\n";
@@ -1781,14 +1791,13 @@ static bool ReadFileBytes(const std::string& path, std::vector<uint8_t>& out)
                 close(fd);
                 return false;
         }
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        if (sz <= 0)
+        struct stat st;
+        if (fstat(fileno(f), &st) != 0 || st.st_size <= 0)
         {
                 fclose(f);
                 return false;
         }
+        auto sz = st.st_size;
         out.resize(static_cast<size_t>(sz));
         bool ok = fread(out.data(), 1, out.size(), f) == out.size();
         fclose(f);
