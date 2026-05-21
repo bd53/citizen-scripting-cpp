@@ -472,6 +472,7 @@ inline ProcessResult spawnProcess(const std::string& command, size_t maxOutputBy
         char buf[4096];
         bool timedOut = false;
         bool outputCapped = false;
+        int wstatus = 0;
         struct pollfd pfd{ };
         pfd.fd = pipefd[0];
         pfd.events = POLLIN;
@@ -490,7 +491,6 @@ inline ProcessResult spawnProcess(const std::string& command, size_t maxOutputBy
                         continue;
                 if (ret <= 0)
                 {
-                        int wstatus = 0;
                         if (waitpid(pid, &wstatus, WNOHANG) != 0)
                                 break;
                         if (ret == 0)
@@ -515,7 +515,6 @@ inline ProcessResult spawnProcess(const std::string& command, size_t maxOutputBy
                 }
         }
         close(pipefd[0]);
-        int wstatus = 0;
         pid_t wp = waitpid(pid, &wstatus, WNOHANG);
         if (wp == 0)
         {
