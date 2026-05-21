@@ -141,6 +141,16 @@ static const std::string& GetEmbeddedSdkPath()
                 mkdir((path + "/src").c_str(), 0700);
                 WriteFileFromMemory(path + "/include/CppScriptRuntime.h", kEmbeddedCppScriptRuntimeH, kEmbeddedCppScriptRuntimeH_len);
                 WriteFileFromMemory(path + "/src/DB.h", kEmbeddedDBH, kEmbeddedDBH_len);
+                std::atexit([]
+                {
+                        if (path.empty())
+                                return;
+                        unlink((path + "/src/DB.h").c_str());
+                        unlink((path + "/include/CppScriptRuntime.h").c_str());
+                        rmdir((path + "/src").c_str());
+                        rmdir((path + "/include").c_str());
+                        rmdir(path.c_str());
+                });
         });
         return path;
 }
@@ -1792,7 +1802,7 @@ static bool ReadFileBytes(const std::string& path, std::vector<uint8_t>& out)
                 return false;
         }
         struct stat st;
-        if (fstat(fileno(f), &st) != 0 || st.st_size <= 0)
+        if (fstat(fd, &st) != 0 || st.st_size <= 0)
         {
                 fclose(f);
                 return false;

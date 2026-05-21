@@ -1109,6 +1109,11 @@ namespace detail
                                         error = true;
                                         return { };
                                 }
+                                if (src[digitStart] == '0' && pos - digitStart > 1)
+                                {
+                                        error = true;
+                                        return { };
+                                }
                                 if (pos < src.size() && src[pos] == '.')
                                 {
                                         hasDot = true;
@@ -1395,9 +1400,9 @@ struct Context
                         snprintf(timerCtx, sizeof(timerCtx), "timer %d", id);
                         safeInvoke(cb, resourceName.c_str(), timerCtx);
                 }
-                auto tickSnapshot = ticks;
-                for (auto& h : tickSnapshot)
-                        safeInvoke(h, resourceName.c_str(), "tick handler");
+                size_t tickCount = ticks.size();
+                for (size_t ti = 0; ti < tickCount; ++ti)
+                        safeInvoke(ticks[ti], resourceName.c_str(), "tick handler");
         }
         void dispatchStop()
         {
