@@ -675,6 +675,15 @@ inline void encodeOne(Writer& w, T&& v)
                 w.encNull();
 }
 
+template<typename... TArgs>
+inline std::vector<uint8_t> encodeArgs(TArgs&&... vals)
+{
+        Writer w;
+        w.arrayHeader(static_cast<uint32_t>(sizeof...(vals)));
+        (encodeOne(w, std::forward<TArgs>(vals)), ...);
+        return std::move(w.buf);
+}
+
 using RefCallbackFn = std::function<std::vector<uint8_t>(const uint8_t*, uint32_t)>;
 
 }
@@ -1450,6 +1459,22 @@ inline void removeRef(int32_t refIdx)
         __cfxRemoveRef(refIdx);
 }
 
+inline std::string createCanonicalRef(fxw_internal::RefCallbackFn cb, int32_t* outRef = nullptr)
+{
+        int32_t ref = createRef(std::move(cb));
+        if (ref < 0)
+                return { };
+        std::string out = canonicalizeRef(ref);
+        if (out.empty())
+        {
+                removeRef(ref);
+                return { };
+        }
+        if (outRef)
+                *outRef = ref;
+        return out;
+}
+
 inline std::vector<uint8_t> invokeFunctionReference(const std::string& ref, const uint8_t* args, uint32_t argsLen)
 {
         struct
@@ -1747,29 +1772,23 @@ inline void removeEventHandler(int32_t token)
 template<typename... TArgs>
 inline void emit(const std::string& event, TArgs&&... vals)
 {
-        fxw_internal::Writer w;
-        w.arrayHeader(static_cast<uint32_t>(sizeof...(vals)));
-        (fxw_internal::encodeOne(w, std::forward<TArgs>(vals)), ...);
-        __cfxEmitEvent(event.c_str(), static_cast<uint32_t>(event.size()), w.buf.data(), static_cast<uint32_t>(w.buf.size()));
+        auto buf = fxw_internal::encodeArgs(std::forward<TArgs>(vals)...);
+        __cfxEmitEvent(event.c_str(), static_cast<uint32_t>(event.size()), buf.data(), static_cast<uint32_t>(buf.size()));
 }
 
 template<typename... TArgs>
 inline void emitNet(const std::string& event, int target, TArgs&&... vals)
 {
-        fxw_internal::Writer w;
-        w.arrayHeader(static_cast<uint32_t>(sizeof...(vals)));
-        (fxw_internal::encodeOne(w, std::forward<TArgs>(vals)), ...);
-        __cfxEmitNetEvent(event.c_str(), static_cast<uint32_t>(event.size()), target, w.buf.data(), static_cast<uint32_t>(w.buf.size()));
+        auto buf = fxw_internal::encodeArgs(std::forward<TArgs>(vals)...);
+        __cfxEmitNetEvent(event.c_str(), static_cast<uint32_t>(event.size()), target, buf.data(), static_cast<uint32_t>(buf.size()));
 }
 
 template<typename... TArgs>
 inline void emitLatent(const std::string& event, int target, int bps, TArgs&&... vals)
 {
-        fxw_internal::Writer w;
-        w.arrayHeader(static_cast<uint32_t>(sizeof...(vals)));
-        (fxw_internal::encodeOne(w, std::forward<TArgs>(vals)), ...);
+        auto buf = fxw_internal::encodeArgs(std::forward<TArgs>(vals)...);
         std::string targetStr = std::to_string(target);
-        invokeNative(HashString("TRIGGER_LATENT_CLIENT_EVENT_INTERNAL"), { NativeArg::ptr(event.c_str()), NativeArg::ptr(targetStr.c_str()), NativeArg::ptr(w.buf.data()), NativeArg(static_cast<int32_t>(w.buf.size())), NativeArg(static_cast<int32_t>(bps)) });
+        invokeNative(HashString("TRIGGER_LATENT_CLIENT_EVENT_INTERNAL"), { NativeArg::ptr(event.c_str()), NativeArg::ptr(targetStr.c_str()), NativeArg::ptr(buf.data()), NativeArg(static_cast<int32_t>(buf.size())), NativeArg(static_cast<int32_t>(bps)) });
 }
 
 inline void cancelEvent()
@@ -1999,7 +2018,8 @@ inline std::vector<std::string> getStateBagKeys(const std::string& bagName)
 
 inline int32_t addStateBagChangeHandler(const std::string& keyFilter, const std::string& bagFilter, StateBagChangeHandler handler)
 {
-        int32_t hostRef = detail::createRef([handler](const uint8_t* args, uint32_t argsSize) -> std::vector<uint8_t>
+        int32_t hostRef = -1;
+        std::string cbRef = detail::createCanonicalRef([handler](const uint8_t* args, uint32_t argsSize) -> std::vector<uint8_t>
         {
                 auto decoded = fxw_internal::decode(args, argsSize);
                 fxw_internal::ensureArray(decoded);
@@ -2013,13 +2033,9 @@ inline int32_t addStateBagChangeHandler(const std::string& keyFilter, const std:
                         handler(bagName, key, value, source, replicated);
                 }
                 return { MSGPACK_EMPTY_ARRAY };
-        });
-        std::string cbRef = detail::canonicalizeRef(hostRef);
+        }, &hostRef);
         if (cbRef.empty())
-        {
-                detail::removeRef(hostRef);
                 return -1;
-        }
         const char* keyArg = keyFilter.empty() ? nullptr : keyFilter.c_str();
         const char* bagArg = bagFilter.empty() ? nullptr : bagFilter.c_str();
         auto ctx = invokeNative(HashString("ADD_STATE_BAG_CHANGE_HANDLER"), { NativeArg::ptr(keyArg), NativeArg::ptr(bagArg), NativeArg::ptr(cbRef.c_str()) }, 1);
@@ -2045,7 +2061,7 @@ inline void removeStateBagChangeHandler(int32_t cookie)
 
 inline void addExport(const std::string& name, ExportHandler handler)
 {
-        int32_t hostRef = detail::createRef([handler](const uint8_t* args, uint32_t argsSize) -> std::vector<uint8_t>
+        std::string exportRef = detail::createCanonicalRef([handler](const uint8_t* args, uint32_t argsSize) -> std::vector<uint8_t>
         {
                 auto decoded = fxw_internal::decode(args, argsSize);
                 fxw_internal::ensureArray(decoded);
@@ -2056,15 +2072,11 @@ inline void addExport(const std::string& name, ExportHandler handler)
                 arr.children.push_back(std::move(result));
                 return fxw_internal::encode(arr);
         });
-        std::string exportRef = detail::canonicalizeRef(hostRef);
         if (exportRef.empty())
-        {
-                detail::removeRef(hostRef);
                 return;
-        }
         std::string resName = getCurrentResourceName();
         std::string eventName = "__cfx_export_" + resName + "_" + name;
-        on(eventName, [exportRef](const std::string&, EventArgs args)
+        on(eventName, [exportRef](const std::string&, const EventArgs& args)
         {
                 if (args.size() == 0)
                         return;
@@ -2085,7 +2097,8 @@ inline void addExport(const std::string& name, ExportHandler handler)
 inline json::Value callExport(const std::string& resource, const std::string& name, std::initializer_list<json::Value> args = { })
 {
         auto capturedRef = std::make_shared<std::string>();
-        int32_t setterRef = detail::createRef([capturedRef](const uint8_t* data, uint32_t size) -> std::vector<uint8_t>
+        int32_t setterRef = -1;
+        std::string setterRefStr = detail::createCanonicalRef([capturedRef](const uint8_t* data, uint32_t size) -> std::vector<uint8_t>
         {
                 auto decoded = fxw_internal::decode(data, size);
                 if (decoded.kind == fxw_internal::Value::Kind::FuncRef)
@@ -2093,8 +2106,7 @@ inline json::Value callExport(const std::string& resource, const std::string& na
                 else if (decoded.kind == fxw_internal::Value::Kind::Array && decoded.size() > 0 && decoded.at(0).kind == fxw_internal::Value::Kind::FuncRef)
                         *capturedRef = decoded.at(0).scalar;
                 return { MSGPACK_EMPTY_ARRAY };
-        });
-        std::string setterRefStr = detail::canonicalizeRef(setterRef);
+        }, &setterRef);
         if (setterRefStr.empty())
                 return { };
         fxw_internal::Value setterVal;
@@ -2126,7 +2138,7 @@ inline void onCommand(const std::string& command, CommandHandler h)
 {
         if (auto* c = fxw_internal::currentContext())
                 c->commands[command].push_back(h);
-        int32_t hostRef = detail::createRef([command](const uint8_t* args, uint32_t argsSize) -> std::vector<uint8_t>
+        std::string cbRef = detail::createCanonicalRef([command](const uint8_t* args, uint32_t argsSize) -> std::vector<uint8_t>
         {
                 auto decoded = fxw_internal::decode(args, argsSize);
                 fxw_internal::ensureArray(decoded);
@@ -2145,12 +2157,8 @@ inline void onCommand(const std::string& command, CommandHandler h)
                 }
                 return { MSGPACK_EMPTY_ARRAY };
         });
-        std::string cbRef = detail::canonicalizeRef(hostRef);
         if (cbRef.empty())
-        {
-                detail::removeRef(hostRef);
                 return;
-        }
         invokeNative(HashString("REGISTER_COMMAND"), { NativeArg::ptr(command.c_str()), NativeArg::ptr(cbRef.c_str()), NativeArg(0) });
 }
 
@@ -2807,7 +2815,7 @@ class CppScriptRuntime final : public fx::OMClass<CppScriptRuntime, IScriptRunti
         bool m_hasRemoveRefFn = false;
         bool m_hasHasPendingWorkFn = false;
         std::unordered_map<int32_t, int32_t> m_refToCallbackId;
-        struct RefGuard { std::mutex mu; bool alive = true; };
+        struct RefGuard { std::recursive_mutex mu; bool alive = true; };
         std::shared_ptr<RefGuard> m_refGuard = std::make_shared<RefGuard>();
         bool m_eventCanceled = false;
         bool m_hasValidNativeResult = false;

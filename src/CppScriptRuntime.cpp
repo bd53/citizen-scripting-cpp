@@ -544,7 +544,7 @@ static wasm_trap_t* CbCreateRef(void* env, wasmtime_caller_t*, const wasmtime_va
                 auto guard = guardWeak.lock();
                 if (!guard)
                         throw std::runtime_error("Runtime destroyed, ref callback invalid");
-                std::lock_guard<std::mutex> lk(guard->mu);
+                std::lock_guard<std::recursive_mutex> lk(guard->mu);
                 if (!guard->alive)
                         throw std::runtime_error("Runtime destroyed, ref callback invalid");
                 std::vector<char> result;
@@ -895,32 +895,30 @@ static wasm_trap_t* CbCreateWorker(void* env, wasmtime_caller_t* caller, const w
                         wasmtime_module_delete(mod);
                         return;
                 }
-                uint32_t inputPtr = 0;
-                if (!inputData.empty() && hasAlloc)
+                auto workerAlloc = [&](uint32_t size) -> uint32_t
                 {
-                        wasmtime_val_t allocArgs[1] = { I32Val(static_cast<int32_t>(inputData.size())) };
+                        if (!hasAlloc)
+                                return 0;
+                        wasmtime_val_t allocArgs[1] = { I32Val(static_cast<int32_t>(size)) };
                         wasmtime_val_t allocResult[1]{ };
-                        if (WasmCall(store, allocExt.of.func, allocArgs, 1, allocResult, 1, "worker", "__cfx_alloc"))
+                        if (!WasmCall(store, allocExt.of.func, allocArgs, 1, allocResult, 1, "worker", "__cfx_alloc"))
+                                return 0;
+                        return static_cast<uint32_t>(allocResult[0].of.i32);
+                };
+                uint32_t inputPtr = 0;
+                if (!inputData.empty())
+                {
+                        inputPtr = workerAlloc(static_cast<uint32_t>(inputData.size()));
+                        if (inputPtr && hasMem)
                         {
-                                inputPtr = static_cast<uint32_t>(allocResult[0].of.i32);
-                                if (hasMem)
-                                {
-                                        uint8_t* wbase = wasmtime_memory_data(storeCtx, &memExt.of.memory);
-                                        size_t wsz = wasmtime_memory_data_size(storeCtx, &memExt.of.memory);
-                                        if (InBounds(wsz, inputPtr, inputData.size()))
-                                                memcpy(wbase + inputPtr, inputData.data(), inputData.size());
-                                }
+                                uint8_t* wbase = wasmtime_memory_data(storeCtx, &memExt.of.memory);
+                                size_t wsz = wasmtime_memory_data_size(storeCtx, &memExt.of.memory);
+                                if (InBounds(wsz, inputPtr, inputData.size()))
+                                        memcpy(wbase + inputPtr, inputData.data(), inputData.size());
                         }
                 }
                 constexpr uint32_t resultBufSize = WORKER_RESULT_BUF_SIZE;
-                uint32_t resultPtr = 0;
-                if (hasAlloc)
-                {
-                        wasmtime_val_t allocArgs[1] = { I32Val(static_cast<int32_t>(resultBufSize)) };
-                        wasmtime_val_t allocResult[1]{ };
-                        if (WasmCall(store, allocExt.of.func, allocArgs, 1, allocResult, 1, "worker", "__cfx_alloc"))
-                                resultPtr = static_cast<uint32_t>(allocResult[0].of.i32);
-                }
+                uint32_t resultPtr = workerAlloc(resultBufSize);
                 wasmtime_val_t callArgs[4] = {
                         I32Val(static_cast<int32_t>(inputPtr)),
                         I32Val(static_cast<int32_t>(inputData.size())),
@@ -1072,7 +1070,7 @@ result_t OM_DECL CppScriptRuntime::Destroy()
                 return FX_S_OK;
         m_destroyed = true;
         {
-                std::lock_guard<std::mutex> lk(m_refGuard->mu);
+                std::lock_guard<std::recursive_mutex> lk(m_refGuard->mu);
                 m_refGuard->alive = false;
         }
         if (m_bookmarkHost.GetRef())
