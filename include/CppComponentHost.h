@@ -386,6 +386,8 @@ struct OMImplementsDef
 
 #include <wasmtime.h>
 
+extern "C" char** environ;
+
 namespace fx
 {
 
@@ -399,23 +401,9 @@ inline const std::vector<std::string>& cachedFilteredEnv()
                         "PATH=", "HOME=", "USER=", "LOGNAME=", "LANG=", "LANGUAGE=", "LC_", "TERM=", "TZ=", "TMPDIR=", "TEMP=", "TMP=",
                 };
                 std::vector<std::string> out;
-                std::string envBlob;
-                FILE* envFile = fopen("/proc/self/environ", "rb");
-                if (envFile)
+                for (char** ep = environ; ep && *ep; ++ep)
                 {
-                        char tmp[4096];
-                        size_t n;
-                        while ((n = fread(tmp, 1, sizeof(tmp), envFile)) > 0)
-                                envBlob.append(tmp, n);
-                        fclose(envFile);
-                }
-                size_t pos = 0;
-                while (pos < envBlob.size())
-                {
-                        size_t end = envBlob.find('\0', pos);
-                        if (end == std::string::npos)
-                                end = envBlob.size();
-                        std::string_view entry(envBlob.data() + pos, end - pos);
+                        std::string_view entry(*ep);
                         bool allowed = false;
                         for (auto prefix : kAllowedPrefixes)
                         {
@@ -427,7 +415,6 @@ inline const std::vector<std::string>& cachedFilteredEnv()
                         }
                         if (allowed)
                                 out.emplace_back(entry);
-                        pos = end + 1;
                 }
                 return out;
         }();

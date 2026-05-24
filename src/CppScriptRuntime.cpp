@@ -200,19 +200,20 @@ static bool WasmCall(wasmtime_store_t* store, const wasmtime_func_t& fn, const w
 
 static void SanitizeTraceMsg(std::string& msg)
 {
-        bool needsScan = false;
-        for (unsigned char c : msg)
+        size_t scanStart = msg.size();
+        for (size_t i = 0; i < msg.size(); ++i)
         {
+                unsigned char c = static_cast<unsigned char>(msg[i]);
                 if ((c < 0x20 && c != '\n' && c != '\t') || c == 0x7F || c == 0xE2 || c == 0xEF)
                 {
-                        needsScan = true;
+                        scanStart = i;
                         break;
                 }
         }
-        if (!needsScan)
+        if (scanStart == msg.size())
                 return;
-        size_t out = 0;
-        for (size_t i = 0; i < msg.size(); ++i)
+        size_t out = scanStart;
+        for (size_t i = scanStart; i < msg.size(); ++i)
         {
                 unsigned char c = static_cast<unsigned char>(msg[i]);
                 if (c == '\n' || c == '\t' || (c >= 0x20 && c != 0x1B && c != 0x7F))
@@ -403,7 +404,7 @@ static wasm_trap_t* CbCopyBinaryResult(void* env, wasmtime_caller_t* caller, con
         int32_t sizeIdx = args[2].of.i32;
         uint32_t bufPtr = ArgU32(args[3]);
         int32_t bufMax = args[4].of.i32;
-        if (ptrIdx < 0 || ptrIdx >= 32 || sizeIdx < 0 || sizeIdx >= 32)
+        if (ptrIdx < 0 || ptrIdx >= 32 || sizeIdx < 0 || sizeIdx >= 32 || !((rt->m_lastResultPtrMask >> ptrIdx) & 1u))
         {
                 results[0] = I32Val(0);
                 return nullptr;
@@ -1330,7 +1331,11 @@ bool CppScriptRuntime::callInvokeRef(uint32_t callbackId, const char* argsSerial
         };
         wasmtime_val_t ret{ };
         if (!WasmCall(m_store, m_fnInvokeRef, a, 5, &ret, 1, m_resourceName.c_str(), "invoke_ref trap"))
+        {
+                wasmFree(argsPtr, argsAllocSz);
+                wasmFree(resultPtr, resultBufMax);
                 return false;
+        }
         wasmFree(argsPtr, argsAllocSz);
         int32_t actualLen = ret.of.i32;
         if (actualLen > 0)
@@ -1438,6 +1443,13 @@ static struct OrphanedWorkerList
         };
         std::mutex mutex;
         std::vector<Entry> entries;
+        ~OrphanedWorkerList()
+        {
+                std::lock_guard<std::mutex> lk(mutex);
+                for (auto& e : entries)
+                        if (e.thread.joinable())
+                                e.thread.join();
+        }
         void reap()
         {
                 std::lock_guard<std::mutex> lk(mutex);
@@ -1645,8 +1657,8 @@ result_t OM_DECL CppScriptRuntime::TickBookmarks(uint64_t* bookmarks, int32_t nu
         fx::PushEnvironment env(static_cast<IScriptRuntime*>(this));
         BoundaryGuard boundary(m_host.GetRef(), static_cast<int64_t>(nextBoundaryId()));
         wasmtime_val_t args[2] = { I32Val(static_cast<int32_t>(arrPtr)), I32Val(static_cast<int32_t>(wasmIds.size())) };
-        if (WasmCall(m_store, m_fnTickBookmarks, args, 2, nullptr, 0, m_resourceName.c_str(), "tick_bookmarks trap"))
-                wasmFree(arrPtr, arrSize);
+        WasmCall(m_store, m_fnTickBookmarks, args, 2, nullptr, 0, m_resourceName.c_str(), "tick_bookmarks trap");
+        wasmFree(arrPtr, arrSize);
         return FX_S_OK;
 }
 
@@ -1697,8 +1709,7 @@ result_t OM_DECL CppScriptRuntime::TriggerEvent(char* eventName, char* argsSeria
                 std::string msg = "^1SCRIPT ERROR: @" + m_resourceName + ": WASM trap in event '" + eventName + "'^7\n";
                 m_host->ScriptTrace(Mut(msg));
         }
-        if (eventOk)
-                wasmFree(block, totalSz);
+        wasmFree(block, totalSz);
         return FX_S_OK;
 }
 

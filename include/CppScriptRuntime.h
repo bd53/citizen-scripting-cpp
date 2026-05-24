@@ -1425,14 +1425,23 @@ struct Context
                 Value decoded = decode(args, argsLen);
                 ensureArray(decoded);
                 fx::EventArgs ea(std::move(decoded));
-                std::vector<int32_t> handlerIds;
-                handlerIds.reserve(it->second.size());
-                for (const auto& entry : it->second)
-                        handlerIds.push_back(entry.id);
+                constexpr size_t kInlineMax = 16;
+                int32_t inlineBuf[kInlineMax];
+                size_t handlerCount = it->second.size();
+                std::vector<int32_t> heapBuf;
+                int32_t* handlerIds = inlineBuf;
+                if (handlerCount > kInlineMax)
+                {
+                        heapBuf.resize(handlerCount);
+                        handlerIds = heapBuf.data();
+                }
+                for (size_t j = 0; j < handlerCount; ++j)
+                        handlerIds[j] = it->second[j].id;
                 char eventCtx[256];
                 snprintf(eventCtx, sizeof(eventCtx), "event '%s'", key.c_str());
-                for (auto handlerId : handlerIds)
+                for (size_t hi = 0; hi < handlerCount; ++hi)
                 {
+                        int32_t hid = handlerIds[hi];
                         auto jt = events.find(key);
                         if (jt == events.end())
                                 break;
@@ -1440,7 +1449,7 @@ struct Context
                         EventHandlerEntry* found = nullptr;
                         for (auto& e : vec)
                         {
-                                if (e.id == handlerId)
+                                if (e.id == hid)
                                 {
                                         found = &e;
                                         break;
@@ -1772,7 +1781,8 @@ inline int32_t on(const std::string& event, F&& handler)
                 h = detail::WrapTypedHandler(std::forward<F>(handler));
         if (auto* c = fxw_internal::currentContext())
         {
-                bool first = c->events.find(event) == c->events.end() || c->events[event].empty();
+                auto evIt = c->events.find(event);
+                bool first = evIt == c->events.end() || evIt->second.empty();
                 int32_t token = fx::allocateId(c->nextEventHandlerId, c->handlerEventMap);
                 if (token < 0)
                         return -1;
