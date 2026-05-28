@@ -10,7 +10,7 @@ jobs:
         linux:
                 runs-on: ubuntu-24.04
                 steps:
-                        - uses: actions/checkout@v4
+                        - uses: actions/checkout@v6.0.2
                           with:
                                   fetch-depth: 1
 
@@ -20,7 +20,9 @@ jobs:
                                   sudo apt-get install -y python3
 
                         - name: Install Zig
-                          uses: mlugg/setup-zig@v2
+                          run: |
+                                  curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | sudo tar -xJ -C /usr/local
+                                  sudo ln -s /usr/local/zig-x86_64-linux-0.15.2/zig /usr/local/bin/zig
 
                         - name: Install premake5
                           run: |
@@ -28,7 +30,7 @@ jobs:
                                   sudo chmod +x /usr/local/bin/premake5
 
                         - name: Cache wasmtime
-                          uses: actions/cache@v4
+                          uses: actions/cache@v5.0.5
                           with:
                                   path: vendor/wasmtime
                                   key: wasmtime-v45.0.0-x86_64-musl
