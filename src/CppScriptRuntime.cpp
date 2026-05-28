@@ -198,13 +198,43 @@ static bool WasmCall(wasmtime_store_t* store, const wasmtime_func_t& fn, const w
         return true;
 }
 
+static bool IsFilteredE2(const std::string& msg, size_t i)
+{
+        if (i + 2 >= msg.size())
+                return false;
+        unsigned char c1 = static_cast<unsigned char>(msg[i + 1]);
+        unsigned char c2 = static_cast<unsigned char>(msg[i + 2]);
+        if (c1 == 0x80 && ((c2 >= 0x8B && c2 <= 0x8F) || (c2 == 0xA8 || c2 == 0xA9) || (c2 >= 0xAA && c2 <= 0xAE)))
+                return true;
+        if (c1 == 0x81 && ((c2 >= 0xA0 && c2 <= 0xA4) || (c2 >= 0xA6 && c2 <= 0xA9)))
+                return true;
+        return false;
+}
+
+static bool IsFilteredEF(const std::string& msg, size_t i)
+{
+        if (i + 2 >= msg.size())
+                return false;
+        return static_cast<unsigned char>(msg[i + 1]) == 0xBB && static_cast<unsigned char>(msg[i + 2]) == 0xBF;
+}
+
 static void SanitizeTraceMsg(std::string& msg)
 {
         size_t scanStart = msg.size();
         for (size_t i = 0; i < msg.size(); ++i)
         {
                 unsigned char c = static_cast<unsigned char>(msg[i]);
-                if ((c < 0x20 && c != '\n' && c != '\t') || c == 0x7F || c == 0xE2 || c == 0xEF)
+                if ((c < 0x20 && c != '\n' && c != '\t') || c == 0x7F)
+                {
+                        scanStart = i;
+                        break;
+                }
+                if (c == 0xE2 && IsFilteredE2(msg, i))
+                {
+                        scanStart = i;
+                        break;
+                }
+                if (c == 0xEF && IsFilteredEF(msg, i))
                 {
                         scanStart = i;
                         break;
@@ -278,6 +308,9 @@ static wasm_trap_t* CbTrace(void* env, wasmtime_caller_t* caller, const wasmtime
                 return nullptr;
         uint32_t ptr = ArgU32(args[0]);
         uint32_t len = ArgU32(args[1]);
+        static constexpr uint32_t MAX_TRACE_LEN = 1u << 20;
+        if (len > MAX_TRACE_LEN)
+                len = MAX_TRACE_LEN;
         if (!mem.check(ptr, len))
                 return nullptr;
         std::string msg(reinterpret_cast<const char*>(mem.base + ptr), len);
@@ -330,7 +363,8 @@ static wasm_trap_t* CbInvokeNative(void* env, wasmtime_caller_t* caller, const w
         if (rt->host())
                 rt->host()->InvokeNative(hostCtx);
         rt->m_lastNativeCtx = hostCtx;
-        rt->m_lastResultPtrMask = wctx.resultPtrMask;
+        uint32_t validResultMask = (wctx.numResults >= 32) ? 0xFFFFFFFFu : ((1u << wctx.numResults) - 1);
+        rt->m_lastResultPtrMask = wctx.resultPtrMask & validResultMask;
         rt->m_hasValidNativeResult = true;
         for (int i = 0; i < hostCtx.numResults; ++i)
         {
@@ -404,7 +438,7 @@ static wasm_trap_t* CbCopyBinaryResult(void* env, wasmtime_caller_t* caller, con
         int32_t sizeIdx = args[2].of.i32;
         uint32_t bufPtr = ArgU32(args[3]);
         int32_t bufMax = args[4].of.i32;
-        if (ptrIdx < 0 || ptrIdx >= 32 || sizeIdx < 0 || sizeIdx >= 32 || !((rt->m_lastResultPtrMask >> ptrIdx) & 1u))
+        if (ptrIdx < 0 || ptrIdx >= 32 || sizeIdx < 0 || sizeIdx >= 32 || !((rt->m_lastResultPtrMask >> ptrIdx) & 1u) || ((rt->m_lastResultPtrMask >> sizeIdx) & 1u))
         {
                 results[0] = I32Val(0);
                 return nullptr;
@@ -696,6 +730,10 @@ static wasm_trap_t* CbInvokeFunctionReference(void* env, wasmtime_caller_t* call
                 memcpy(mem.base + outPtr, &dataPtr, 4);
                 memcpy(mem.base + outPtr + 4, &dataLen, 4);
         }
+        else if (dataPtr)
+        {
+                rt->wasmFree(dataPtr, dataLen);
+        }
         return nullptr;
 }
 
@@ -853,6 +891,9 @@ static wasm_trap_t* CbWorkerTrace(void*, wasmtime_caller_t* caller, const wasmti
                 return nullptr;
         uint32_t ptr = ArgU32(args[0]);
         uint32_t len = ArgU32(args[1]);
+        static constexpr uint32_t MAX_TRACE_LEN = 1u << 20;
+        if (len > MAX_TRACE_LEN)
+                len = MAX_TRACE_LEN;
         if (!mem.check(ptr, len))
                 return nullptr;
         std::string msg(reinterpret_cast<const char*>(mem.base + ptr), len);
@@ -1596,7 +1637,7 @@ result_t CppScriptRuntime::loadWasm(const std::vector<uint8_t>& wasmBytes, const
                 return FX_E_INVALIDARG;
         }
         {
-                std::string msg = "Warning: WebAssembly '" + m_resourceName + "' has been loaded into the c++ rt. This runtime is still in beta and shouldn't be used in production, crashes and breaking changes are to be expected.";
+                std::string msg = "Warning: WebAssembly " + m_scriptFile + " has been loaded into the c++ rt. This runtime is still in beta and shouldn't be used in production, crashes and breaking changes are to be expected.";
                 if (m_host.GetRef())
                         m_host->ScriptTrace(Mut(msg));
                 LogWarning("%s", msg.c_str());
@@ -1709,7 +1750,8 @@ result_t OM_DECL CppScriptRuntime::TriggerEvent(char* eventName, char* argsSeria
                 std::string msg = "^1SCRIPT ERROR: @" + m_resourceName + ": WASM trap in event '" + eventName + "'^7\n";
                 m_host->ScriptTrace(Mut(msg));
         }
-        wasmFree(block, totalSz);
+        if (eventOk)
+                wasmFree(block, totalSz);
         return FX_S_OK;
 }
 
