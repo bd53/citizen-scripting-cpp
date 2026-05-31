@@ -195,6 +195,7 @@ struct MsgpackWriter
 
 #ifdef __wasm__
 
+#include <algorithm>
 #include <bit>
 #include <cstdlib>
 #include <cstring>
@@ -1401,15 +1402,28 @@ struct EventHandlerEntry
         fx::EventHandler handler;
 };
 
+struct TickEntry
+{
+        int32_t id;
+        fx::TickHandler handler;
+};
+
+struct StopEntry
+{
+        int32_t id;
+        fx::StopHandler handler;
+};
+
 struct Context
 {
         std::string resourceName;
-        std::vector<fx::TickHandler> ticks;
-        std::vector<fx::StopHandler> stops;
+        std::vector<TickEntry> ticks;
+        std::vector<StopEntry> stops;
+        int32_t nextTickId = 1;
+        int32_t nextStopId = 1;
         std::unordered_map<std::string, std::vector<EventHandlerEntry>> events;
         std::unordered_map<int32_t, std::string> handlerEventMap;
         int32_t nextEventHandlerId = 1;
-        uint32_t eventsKeyGen = 0;
         std::unordered_map<std::string, std::vector<fx::CommandHandler>> commands;
         std::unordered_set<std::string> netSafeEvents;
         std::unordered_map<int32_t, TimerEntry> timers;
@@ -1422,7 +1436,10 @@ struct Context
         int32_t addTimer(uint32_t ms, uint32_t intervalMs, std::function<void()> cb)
         {
                 if (timers.size() >= MAX_TIMERS)
+                {
+                        fprintf(stderr, "[script:%s] timer limit (%zu) reached, dropping new timer\n", resourceName.c_str(), MAX_TIMERS);
                         return -1;
+                }
                 int32_t id = fx::allocateId(nextTimerId, timers);
                 if (id < 0)
                         return -1;
@@ -1455,14 +1472,21 @@ struct Context
                         snprintf(timerCtx, sizeof(timerCtx), "timer %d", id);
                         safeInvoke(cb, resourceName.c_str(), timerCtx);
                 }
-                size_t tickCount = ticks.size();
-                for (size_t ti = 0; ti < tickCount; ++ti)
-                        safeInvoke(ticks[ti], resourceName.c_str(), "tick handler");
+                std::vector<fx::TickHandler> snapshot;
+                snapshot.reserve(ticks.size());
+                for (auto& t : ticks)
+                        snapshot.push_back(t.handler);
+                for (auto& h : snapshot)
+                        safeInvoke(h, resourceName.c_str(), "tick handler");
         }
 
         void dispatchStop()
         {
-                for (auto& h : stops)
+                std::vector<fx::StopHandler> snapshot;
+                snapshot.reserve(stops.size());
+                for (auto& s : stops)
+                        snapshot.push_back(s.handler);
+                for (auto& h : snapshot)
                         safeInvoke(h, resourceName.c_str(), "stop handler");
         }
 
@@ -1481,45 +1505,15 @@ struct Context
                 Value decoded = decode(args, argsLen);
                 ensureArray(decoded);
                 fx::EventArgs ea(std::move(decoded));
-                constexpr size_t kInlineMax = 16;
-                int32_t inlineBuf[kInlineMax];
-                size_t handlerCount = it->second.size();
-                std::vector<int32_t> heapBuf;
-                int32_t* handlerIds = inlineBuf;
-                if (handlerCount > kInlineMax)
-                {
-                        heapBuf.resize(handlerCount);
-                        handlerIds = heapBuf.data();
-                }
-                for (size_t j = 0; j < handlerCount; ++j)
-                        handlerIds[j] = it->second[j].id;
+                std::vector<fx::EventHandler> snapshot;
+                snapshot.reserve(it->second.size());
+                for (auto& e : it->second)
+                        snapshot.push_back(e.handler);
                 char eventCtx[256];
                 snprintf(eventCtx, sizeof(eventCtx), "event '%s'", key.c_str());
-                auto* vec = &it->second;
-                uint32_t observedGen = eventsKeyGen;
-                for (size_t hi = 0; hi < handlerCount; ++hi)
+                for (auto& h : snapshot)
                 {
-                        if (eventsKeyGen != observedGen)
-                        {
-                                auto jt = events.find(key);
-                                if (jt == events.end())
-                                        break;
-                                vec = &jt->second;
-                                observedGen = eventsKeyGen;
-                        }
-                        int32_t hid = handlerIds[hi];
-                        EventHandlerEntry* found = nullptr;
-                        for (auto& e : *vec)
-                        {
-                                if (e.id == hid)
-                                {
-                                        found = &e;
-                                        break;
-                                }
-                        }
-                        if (!found)
-                                continue;
-                        safeInvoke([&] { found->handler(srcStr, ea); }, resourceName.c_str(), eventCtx);
+                        safeInvoke([&] { h(srcStr, ea); }, resourceName.c_str(), eventCtx);
                         if (__cfxWasEventCanceled())
                                 break;
                 }
@@ -1697,8 +1691,7 @@ inline NativeCtx invokeNative(uint64_t hash, std::initializer_list<NativeArg> ar
 
 inline std::string getStringResult(NativeCtx& ctx, int32_t resultIdx)
 {
-        int32_t len = __cfxCopyStringResult(
-        reinterpret_cast<uint32_t>(&ctx), resultIdx, nullptr, 0);
+        int32_t len = __cfxCopyStringResult(reinterpret_cast<uint32_t>(&ctx), resultIdx, nullptr, 0);
         if (len <= 0)
                 return { };
         std::string out(static_cast<size_t>(len), '\0');
@@ -1851,8 +1844,6 @@ inline int32_t on(const std::string& event, F&& handler)
                         return -1;
                 c->events[event].push_back({ token, std::move(h) });
                 c->handlerEventMap[token] = event;
-                if (isNewKey)
-                        ++c->eventsKeyGen;
                 if (first)
                 {
                         NativeCtx ctx{ };
@@ -1986,16 +1977,94 @@ inline void traceStr(const std::string& msg)
                 __cfxTrace(msg.data(), static_cast<uint32_t>(msg.size()));
 }
 
-inline void onTick(TickHandler h)
+template<typename... TArgs>
+inline void traceLn(const char* fmt, TArgs&&... args)
 {
-        if (auto* c = fxw_internal::currentContext())
-                c->ticks.push_back(std::move(h));
+        static_assert((... && (std::is_trivially_copyable_v<std::decay_t<TArgs>>)), "fx::traceLn arguments must be trivially copyable (use .c_str() for std::string)");
+        if constexpr (sizeof...(args) == 0)
+        {
+                if (!fmt || !fmt[0])
+                {
+                        __cfxTrace("\n", 1);
+                        return;
+                }
+                size_t n = strlen(fmt);
+                if (fmt[n - 1] == '\n')
+                {
+                        __cfxTrace(fmt, static_cast<uint32_t>(n));
+                        return;
+                }
+                if (n + 1 <= 256)
+                {
+                        char stackBuf[257];
+                        memcpy(stackBuf, fmt, n);
+                        stackBuf[n] = '\n';
+                        __cfxTrace(stackBuf, static_cast<uint32_t>(n + 1));
+                        return;
+                }
+                std::string buf(fmt, n);
+                buf.push_back('\n');
+                __cfxTrace(buf.data(), static_cast<uint32_t>(buf.size()));
+        }
+        else
+        {
+                char stackBuf[256];
+                int len = snprintf(stackBuf, sizeof(stackBuf), fmt, std::forward<TArgs>(args)...);
+                if (len < 0)
+                        return;
+                if (static_cast<size_t>(len) + 1 < sizeof(stackBuf))
+                {
+                        stackBuf[len] = '\n';
+                        __cfxTrace(stackBuf, static_cast<uint32_t>(len + 1));
+                        return;
+                }
+                std::string buf(static_cast<size_t>(len) + 1, '\0');
+                snprintf(buf.data(), buf.size(), fmt, std::forward<TArgs>(args)...);
+                buf[len] = '\n';
+                __cfxTrace(buf.data(), static_cast<uint32_t>(buf.size()));
+        }
 }
 
-inline void onStop(StopHandler h)
+inline int32_t onTick(TickHandler h)
 {
-        if (auto* c = fxw_internal::currentContext())
-                c->stops.push_back(std::move(h));
+        auto* c = fxw_internal::currentContext();
+        if (!c)
+                return -1;
+        int32_t id = c->nextTickId++;
+        if (c->nextTickId <= 0)
+                c->nextTickId = 1;
+        c->ticks.push_back({ id, std::move(h) });
+        return id;
+}
+
+inline int32_t onStop(StopHandler h)
+{
+        auto* c = fxw_internal::currentContext();
+        if (!c)
+                return -1;
+        int32_t id = c->nextStopId++;
+        if (c->nextStopId <= 0)
+                c->nextStopId = 1;
+        c->stops.push_back({ id, std::move(h) });
+        return id;
+}
+
+inline void removeTick(int32_t id)
+{
+        auto* c = fxw_internal::currentContext();
+        if (!c)
+                return;
+        auto& v = c->ticks;
+        v.erase(std::remove_if(v.begin(), v.end(), [id](const fxw_internal::TickEntry& e) { return e.id == id; }), v.end());
+}
+
+inline void removeStop(int32_t id)
+{
+        auto* c = fxw_internal::currentContext();
+        if (!c)
+                return;
+        auto& v = c->stops;
+        v.erase(std::remove_if(v.begin(), v.end(), [id](const fxw_internal::StopEntry& e) { return e.id == id; }), v.end());
 }
 
 inline std::string getResourceMetadata(const std::string& key, int index = 0)
@@ -2231,40 +2300,68 @@ inline void addExport(const std::string& name, ExportHandler handler)
         });
 }
 
+namespace detail
+{
+        inline std::unordered_map<std::string, std::string>& exportRefCache()
+        {
+                static std::unordered_map<std::string, std::string> s_cache;
+                return s_cache;
+        }
+
+        inline std::string resolveExportRef(const std::string& resource, const std::string& name)
+        {
+                auto capturedRef = std::make_shared<std::string>();
+                int32_t setterRef = -1;
+                std::string setterRefStr = createCanonicalRef([capturedRef](const uint8_t* data, uint32_t size) -> std::vector<uint8_t>
+                {
+                        auto decoded = fxw_internal::decode(data, size);
+                        if (decoded.kind == fxw_internal::Value::Kind::FuncRef)
+                                *capturedRef = decoded.scalar;
+                        else if (decoded.kind == fxw_internal::Value::Kind::Array && decoded.size() > 0 && decoded.at(0).kind == fxw_internal::Value::Kind::FuncRef)
+                                *capturedRef = decoded.at(0).scalar;
+                        return { MSGPACK_EMPTY_ARRAY };
+                }, &setterRef);
+                if (setterRefStr.empty())
+                        return { };
+                fxw_internal::Value setterVal;
+                setterVal.kind = fxw_internal::Value::Kind::FuncRef;
+                setterVal.scalar = setterRefStr;
+                fxw_internal::Value setterArr;
+                setterArr.kind = fxw_internal::Value::Kind::Array;
+                setterArr.children.push_back(std::move(setterVal));
+                auto setterPayload = fxw_internal::encode(setterArr);
+                std::string eventName = "__cfx_export_" + resource + "_" + name;
+                __cfxEmitEvent(eventName.c_str(), static_cast<uint32_t>(eventName.size()), setterPayload.data(), static_cast<uint32_t>(setterPayload.size()));
+                removeRef(setterRef);
+                return std::move(*capturedRef);
+        }
+}
+
 inline json::Value callExport(const std::string& resource, const std::string& name, std::initializer_list<json::Value> args = { })
 {
-        auto capturedRef = std::make_shared<std::string>();
-        int32_t setterRef = -1;
-        std::string setterRefStr = detail::createCanonicalRef([capturedRef](const uint8_t* data, uint32_t size) -> std::vector<uint8_t>
+        std::string cacheKey = resource + '/' + name;
+        auto& cache = detail::exportRefCache();
+        auto cit = cache.find(cacheKey);
+        std::string exportRef;
+        if (cit != cache.end())
+                exportRef = cit->second;
+        else
         {
-                auto decoded = fxw_internal::decode(data, size);
-                if (decoded.kind == fxw_internal::Value::Kind::FuncRef)
-                        *capturedRef = decoded.scalar;
-                else if (decoded.kind == fxw_internal::Value::Kind::Array && decoded.size() > 0 && decoded.at(0).kind == fxw_internal::Value::Kind::FuncRef)
-                        *capturedRef = decoded.at(0).scalar;
-                return { MSGPACK_EMPTY_ARRAY };
-        }, &setterRef);
-        if (setterRefStr.empty())
-                return { };
-        fxw_internal::Value setterVal;
-        setterVal.kind = fxw_internal::Value::Kind::FuncRef;
-        setterVal.scalar = setterRefStr;
-        fxw_internal::Value setterArr;
-        setterArr.kind = fxw_internal::Value::Kind::Array;
-        setterArr.children.push_back(std::move(setterVal));
-        auto setterPayload = fxw_internal::encode(setterArr);
-        std::string eventName = "__cfx_export_" + resource + "_" + name;
-        __cfxEmitEvent(eventName.c_str(), static_cast<uint32_t>(eventName.size()), setterPayload.data(), static_cast<uint32_t>(setterPayload.size()));
-        detail::removeRef(setterRef);
-        if (capturedRef->empty())
-                return { };
+                exportRef = detail::resolveExportRef(resource, name);
+                if (exportRef.empty())
+                        return { };
+                cache.emplace(cacheKey, exportRef);
+        }
         fxw_internal::Value argArr;
         argArr.kind = fxw_internal::Value::Kind::Array;
         argArr.children.assign(args.begin(), args.end());
         auto userPayload = fxw_internal::encode(argArr);
-        auto retData = detail::invokeFunctionReference(*capturedRef, userPayload.data(), static_cast<uint32_t>(userPayload.size()));
+        auto retData = detail::invokeFunctionReference(exportRef, userPayload.data(), static_cast<uint32_t>(userPayload.size()));
         if (retData.empty())
+        {
+                cache.erase(cacheKey);
                 return { };
+        }
         auto result = fxw_internal::decode(retData.data(), static_cast<uint32_t>(retData.size()));
         if (result.kind == fxw_internal::Value::Kind::Array && result.size() > 0)
                 return result.at(0);
@@ -2583,13 +2680,19 @@ inline void createThread(F&& fn)
                 return;
         auto& coros = fxw_internal::coroutines();
         if (coros.size() >= fxw_internal::MAX_COROUTINES)
+        {
+                fprintf(stderr, "[script:%s] coroutine limit (%zu) reached, dropping new thread\n", c->resourceName.c_str(), fxw_internal::MAX_COROUTINES);
                 return;
+        }
         auto stored = std::make_shared<std::decay_t<F>>(std::forward<F>(fn));
         auto task = (*stored)();
         auto& nextId = fxw_internal::nextCoroutineId();
         int32_t id = fx::allocateId(nextId, coros);
         if (id < 0)
+        {
+                fprintf(stderr, "[script:%s] no free coroutine id, dropping new thread\n", c->resourceName.c_str());
                 return;
+        }
         coros[id] = { task.handle, std::move(stored), std::chrono::steady_clock::now() };
         __cfxScheduleBookmark(id, 0);
 }

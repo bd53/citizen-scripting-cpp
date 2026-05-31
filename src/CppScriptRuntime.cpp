@@ -84,6 +84,21 @@ static void Log(LogLevel level, const char* fmt, ...)
 
 static inline char* Mut(std::string& s) { return s.data(); }
 
+static std::string UTF8Truncate(const std::string& s, size_t maxBytes)
+{
+        if (s.size() <= maxBytes)
+                return s;
+        size_t cut = maxBytes;
+        while (cut > 0)
+        {
+                unsigned char c = static_cast<unsigned char>(s[cut]);
+                if ((c & 0xC0) != 0x80)
+                        break;
+                --cut;
+        }
+        return s.substr(0, cut) + "...";
+}
+
 static bool ValidateScriptPath(const char* scriptFile, const std::string& root, std::string& resolvedPath, std::string& resolvedRoot)
 {
         std::string fullPath = root + "/" + scriptFile;
@@ -127,14 +142,15 @@ static wasm_functype_t* MakeFuncType(std::initializer_list<wasm_valkind_t> param
                 abort();
         wasm_valtype_t* pv[MAX_FUNC_TYPE_PARAMS];
         wasm_valtype_t* rv[MAX_FUNC_TYPE_PARAMS];
-        size_t pi = 0, ri = 0;
+        size_t i = 0;
         for (auto k : params)
-                pv[pi++] = wasm_valtype_new(k);
+                pv[i++] = wasm_valtype_new(k);
+        i = 0;
         for (auto k : results)
-                rv[ri++] = wasm_valtype_new(k);
+                rv[i++] = wasm_valtype_new(k);
         wasm_valtype_vec_t p_vec{ }, r_vec{ };
-        wasm_valtype_vec_new(&p_vec, pi, pv);
-        wasm_valtype_vec_new(&r_vec, ri, rv);
+        wasm_valtype_vec_new(&p_vec, params.size(), pv);
+        wasm_valtype_vec_new(&r_vec, results.size(), rv);
         return wasm_functype_new(&p_vec, &r_vec);
 }
 
@@ -713,11 +729,24 @@ static bool HasWasmPermission(IScriptHost* host, const char* convarName, const s
                 std::unordered_set<std::string> allowed;
                 bool wildcard = false;
         };
+        struct CacheKey
+        {
+                IScriptHost* host;
+                std::string convar;
+                bool operator==(const CacheKey& o) const { return host == o.host && convar == o.convar; }
+        };
+        struct CacheKeyHash
+        {
+                size_t operator()(const CacheKey& k) const
+                {
+                        return std::hash<void*>{}(k.host) ^ (std::hash<std::string>{}(k.convar) << 1);
+                }
+        };
         static std::mutex s_mu;
-        static std::unordered_map<std::string, CacheEntry> s_cache;
+        static std::unordered_map<CacheKey, CacheEntry, CacheKeyHash> s_cache;
         std::string current = GetConvar(host, convarName, "");
         std::lock_guard<std::mutex> lk(s_mu);
-        auto& entry = s_cache[convarName];
+        auto& entry = s_cache[CacheKey{ host, convarName }];
         if (entry.raw != current)
         {
                 entry.raw = current;
@@ -773,7 +802,8 @@ static wasm_trap_t* CbSpawnProcess(void* env, wasmtime_caller_t* caller, const w
                 return nullptr;
         }
         std::string cmd = mem.readStr(cmdPtr, cmdLen);
-        LogWarning("Resource '%s' spawning child process: %.256s%s", rt->resourceName().c_str(), cmd.c_str(), cmd.size() > 256 ? "..." : "");
+        std::string displayCmd = UTF8Truncate(cmd, 256);
+        LogWarning("Resource '%s' spawning child process: %s", rt->resourceName().c_str(), displayCmd.c_str());
         fx::ProcessResult pr = fx::spawnProcess(cmd);
         rt->m_lastSpawnExitCode = pr.exitCode;
         if (pr.status == -2 || pr.status == -3)
@@ -1322,7 +1352,8 @@ bool CppScriptRuntime::callInvokeRef(uint32_t callbackId, const char* argsSerial
         }
         if (argsSize > 0)
                 memcpy(base + argsPtr, argsSerialized, argsSize);
-        constexpr uint32_t resultBufMax = WORKER_RESULT_BUF_SIZE;
+        static constexpr uint32_t MAX_REF_RESULT_SIZE = 16u * 1024u * 1024u;
+        uint32_t resultBufMax = WORKER_RESULT_BUF_SIZE;
         uint32_t resultPtr = wasmAlloc(resultBufMax);
         if (!resultPtr)
         {
@@ -1343,11 +1374,36 @@ bool CppScriptRuntime::callInvokeRef(uint32_t callbackId, const char* argsSerial
                 wasmFree(resultPtr, resultBufMax);
                 return false;
         }
-        wasmFree(argsPtr, argsAllocSz);
         int32_t actualLen = ret.of.i32;
+        if (actualLen > 0 && static_cast<uint32_t>(actualLen) > resultBufMax && static_cast<uint32_t>(actualLen) <= MAX_REF_RESULT_SIZE)
+        {
+                wasmFree(resultPtr, resultBufMax);
+                uint32_t newBufMax = static_cast<uint32_t>(actualLen);
+                uint32_t newResultPtr = wasmAlloc(newBufMax);
+                if (!newResultPtr)
+                {
+                        wasmFree(argsPtr, argsAllocSz);
+                        return false;
+                }
+                resultPtr = newResultPtr;
+                resultBufMax = newBufMax;
+                a[3] = I32Val(static_cast<int32_t>(resultPtr));
+                a[4] = I32Val(static_cast<int32_t>(resultBufMax));
+                wasmtime_val_t ret2{ };
+                if (!WasmCall(m_store, m_fnInvokeRef, a, 5, &ret2, 1, m_resourceName.c_str(), "invoke_ref trap"))
+                {
+                        wasmFree(argsPtr, argsAllocSz);
+                        wasmFree(resultPtr, resultBufMax);
+                        return false;
+                }
+                actualLen = ret2.of.i32;
+        }
+        wasmFree(argsPtr, argsAllocSz);
         if (actualLen > 0)
         {
                 uint32_t copyLen = std::min(static_cast<uint32_t>(actualLen), resultBufMax);
+                if (static_cast<uint32_t>(actualLen) > resultBufMax)
+                        LogWarning("ref result truncated in '%s' (%d > %u, cap %u)", m_resourceName.c_str(), actualLen, resultBufMax, MAX_REF_RESULT_SIZE);
                 base = wasmBase();
                 memSz = wasmMemSize();
                 if (InBounds(memSz, resultPtr, copyLen))
@@ -1452,6 +1508,8 @@ static struct OrphanedWorkerList
         std::mutex mutex;
         std::vector<Entry> entries;
         std::atomic<bool> hasEntries{ false };
+        std::atomic<int64_t> lastReapMs{ 0 };
+        static constexpr int64_t REAP_INTERVAL_MS = 1000;
 
         ~OrphanedWorkerList()
         {
@@ -1464,6 +1522,12 @@ static struct OrphanedWorkerList
         void reap()
         {
                 if (!hasEntries.load(std::memory_order_relaxed))
+                        return;
+                auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                int64_t last = lastReapMs.load(std::memory_order_relaxed);
+                if (nowMs - last < REAP_INTERVAL_MS)
+                        return;
+                if (!lastReapMs.compare_exchange_strong(last, nowMs, std::memory_order_relaxed))
                         return;
                 std::lock_guard<std::mutex> lk(mutex);
                 auto it = entries.begin();
