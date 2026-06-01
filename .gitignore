@@ -1,4 +1,4 @@
-/build
+build/
 src/DB.h
 src/SDK.h
-/vendor/wasmtime
+vendor/wasmtime
