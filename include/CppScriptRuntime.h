@@ -2030,7 +2030,18 @@ inline int32_t onTick(TickHandler h)
         auto* c = fxw_internal::currentContext();
         if (!c)
                 return -1;
-        int32_t id = c->nextTickId++;
+        auto hasId = [&](int32_t id) { for (auto& e : c->ticks) if (e.id == id) return true; return false; };
+        int32_t id = c->nextTickId;
+        int32_t start = id;
+        do {
+                if (!hasId(id))
+                        break;
+                if (++id <= 0)
+                        id = 1;
+                if (id == start)
+                        return -1;
+        } while (true);
+        c->nextTickId = id + 1;
         if (c->nextTickId <= 0)
                 c->nextTickId = 1;
         c->ticks.push_back({ id, std::move(h) });
@@ -2042,7 +2053,18 @@ inline int32_t onStop(StopHandler h)
         auto* c = fxw_internal::currentContext();
         if (!c)
                 return -1;
-        int32_t id = c->nextStopId++;
+        auto hasId = [&](int32_t id) { for (auto& e : c->stops) if (e.id == id) return true; return false; };
+        int32_t id = c->nextStopId;
+        int32_t start = id;
+        do {
+                if (!hasId(id))
+                        break;
+                if (++id <= 0)
+                        id = 1;
+                if (id == start)
+                        return -1;
+        } while (true);
+        c->nextStopId = id + 1;
         if (c->nextStopId <= 0)
                 c->nextStopId = 1;
         c->stops.push_back({ id, std::move(h) });
