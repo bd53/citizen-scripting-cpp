@@ -1383,11 +1383,17 @@ inline void safeInvoke(F&& fn, const char* resourceName, const char* context)
         }
         catch (const std::exception& e)
         {
-                fprintf(stderr, "[script:%s] Unhandled exception in %s: %s\n", resourceName, context, e.what());
+                char buf[512];
+                int len = snprintf(buf, sizeof(buf), "[script:%s] Unhandled exception in %s: %s\n", resourceName, context, e.what());
+                if (len > 0)
+                        __cfxTrace(buf, static_cast<uint32_t>(std::min<size_t>(static_cast<size_t>(len), sizeof(buf) - 1)));
         }
         catch (...)
         {
-                fprintf(stderr, "[script:%s] Unhandled non-standard exception in %s\n", resourceName, context);
+                char buf[256];
+                int len = snprintf(buf, sizeof(buf), "[script:%s] Unhandled non-standard exception in %s\n", resourceName, context);
+                if (len > 0)
+                        __cfxTrace(buf, static_cast<uint32_t>(std::min<size_t>(static_cast<size_t>(len), sizeof(buf) - 1)));
         }
 #else
         (void)resourceName;
