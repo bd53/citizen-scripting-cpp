@@ -2540,6 +2540,38 @@ inline json::Value callExport(const std::string& resource, const std::string& na
         return result;
 }
 
+inline void callExportAsync(const std::string& resource, const std::string& name, const std::vector<json::Value>& args, std::function<void(json::Value)> callback)
+{
+        json::Value result = callExport(resource, name, args);
+        if (result.kind == fxw_internal::Value::Kind::Object)
+        {
+                const auto& asyncRetval = result["__cfx_async_retval"];
+                if (asyncRetval.kind == fxw_internal::Value::Kind::FuncRef)
+                {
+                        std::string asyncRef = asyncRetval.scalar;
+                        std::string cbRef = detail::createCanonicalRef([cb = std::move(callback)](const uint8_t* data, uint32_t size) -> std::vector<uint8_t>
+                {
+                        auto decoded = fxw_internal::decode(data, size);
+                        fxw_internal::ensureArray(decoded);
+                        cb(decoded.size() > 0 ? decoded.at(0) : json::makeNull());
+                        return { MSGPACK_EMPTY_ARRAY };
+                });
+                        if (cbRef.empty())
+                        {
+                                callback(json::makeNull());
+                                return;
+                        }
+                        fxw_internal::Value cbVal;
+                        cbVal.kind = fxw_internal::Value::Kind::FuncRef;
+                        cbVal.initScalar(cbRef);
+                        auto payload = fxw_internal::encode(fxw_internal::Value::array({ std::move(cbVal) }));
+                        detail::invokeFunctionReference(asyncRef, payload.data(), static_cast<uint32_t>(payload.size()));
+                        return;
+                }
+        }
+        callback(std::move(result));
+}
+
 inline void onCommand(const std::string& command, CommandHandler h)
 {
         if (auto* c = fxw_internal::currentContext())
