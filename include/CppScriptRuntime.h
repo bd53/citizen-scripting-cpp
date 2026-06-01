@@ -1494,23 +1494,11 @@ struct EventHandlerEntry
         fx::EventHandler handler;
 };
 
-struct TickEntry
-{
-        int32_t id;
-        fx::TickHandler handler;
-};
-
-struct StopEntry
-{
-        int32_t id;
-        fx::StopHandler handler;
-};
-
 struct Context
 {
         std::string resourceName;
-        std::vector<TickEntry> ticks;
-        std::vector<StopEntry> stops;
+        std::unordered_map<int32_t, fx::TickHandler> ticks;
+        std::unordered_map<int32_t, fx::StopHandler> stops;
         int32_t nextTickId = 1;
         int32_t nextStopId = 1;
         std::unordered_map<std::string, std::vector<EventHandlerEntry>> events;
@@ -1566,8 +1554,8 @@ struct Context
                 }
                 std::vector<fx::TickHandler> snapshot;
                 snapshot.reserve(ticks.size());
-                for (auto& t : ticks)
-                        snapshot.push_back(t.handler);
+                for (auto& [id, h] : ticks)
+                        snapshot.push_back(h);
                 for (auto& h : snapshot)
                         safeInvoke(h, resourceName.c_str(), "tick handler");
         }
@@ -1576,8 +1564,8 @@ struct Context
         {
                 std::vector<fx::StopHandler> snapshot;
                 snapshot.reserve(stops.size());
-                for (auto& s : stops)
-                        snapshot.push_back(s.handler);
+                for (auto& [id, h] : stops)
+                        snapshot.push_back(h);
                 for (auto& h : snapshot)
                         safeInvoke(h, resourceName.c_str(), "stop handler");
         }
@@ -2124,21 +2112,10 @@ inline int32_t onTick(TickHandler h)
         auto* c = fxw_internal::currentContext();
         if (!c)
                 return -1;
-        auto hasId = [&](int32_t id) { for (auto& e : c->ticks) if (e.id == id) return true; return false; };
-        int32_t id = c->nextTickId;
-        int32_t start = id;
-        do {
-                if (!hasId(id))
-                        break;
-                if (++id <= 0)
-                        id = 1;
-                if (id == start)
-                        return -1;
-        } while (true);
-        c->nextTickId = id + 1;
-        if (c->nextTickId <= 0)
-                c->nextTickId = 1;
-        c->ticks.push_back({ id, std::move(h) });
+        int32_t id = fx::allocateId(c->nextTickId, c->ticks);
+        if (id < 0)
+                return -1;
+        c->ticks[id] = std::move(h);
         return id;
 }
 
@@ -2147,40 +2124,25 @@ inline int32_t onStop(StopHandler h)
         auto* c = fxw_internal::currentContext();
         if (!c)
                 return -1;
-        auto hasId = [&](int32_t id) { for (auto& e : c->stops) if (e.id == id) return true; return false; };
-        int32_t id = c->nextStopId;
-        int32_t start = id;
-        do {
-                if (!hasId(id))
-                        break;
-                if (++id <= 0)
-                        id = 1;
-                if (id == start)
-                        return -1;
-        } while (true);
-        c->nextStopId = id + 1;
-        if (c->nextStopId <= 0)
-                c->nextStopId = 1;
-        c->stops.push_back({ id, std::move(h) });
+        int32_t id = fx::allocateId(c->nextStopId, c->stops);
+        if (id < 0)
+                return -1;
+        c->stops[id] = std::move(h);
         return id;
 }
 
 inline void removeTick(int32_t id)
 {
         auto* c = fxw_internal::currentContext();
-        if (!c)
-                return;
-        auto& v = c->ticks;
-        v.erase(std::remove_if(v.begin(), v.end(), [id](const fxw_internal::TickEntry& e) { return e.id == id; }), v.end());
+        if (c)
+                c->ticks.erase(id);
 }
 
 inline void removeStop(int32_t id)
 {
         auto* c = fxw_internal::currentContext();
-        if (!c)
-                return;
-        auto& v = c->stops;
-        v.erase(std::remove_if(v.begin(), v.end(), [id](const fxw_internal::StopEntry& e) { return e.id == id; }), v.end());
+        if (c)
+                c->stops.erase(id);
 }
 
 inline std::string getResourceMetadata(const std::string& key, int index = 0)
