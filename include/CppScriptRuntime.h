@@ -1408,6 +1408,12 @@ inline bool EventArgs::get<bool>(size_t i) const
         return boolean(i);
 }
 
+template<>
+inline json::Value EventArgs::get<json::Value>(size_t i) const
+{
+        return m_arr.at(i);
+}
+
 using EventHandler = std::function<void(const std::string& source, const EventArgs&)>;
 using TickHandler = std::function<void()>;
 using StopHandler = std::function<void()>;
