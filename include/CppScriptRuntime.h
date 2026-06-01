@@ -2473,7 +2473,7 @@ inline void onCommand(const std::string& command, CommandHandler h)
                         auto it = ctx->commands.find(command);
                         if (it != ctx->commands.end())
                                 for (auto& handler : it->second)
-                                        handler(source, cmdArgs);
+                                        safeInvoke([&] { handler(source, cmdArgs); }, ctx->resourceName.c_str(), "command handler");
                 }
                 return { MSGPACK_EMPTY_ARRAY };
         });
