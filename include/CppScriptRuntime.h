@@ -2882,6 +2882,7 @@ CFX_WASM_EXPORT(__cfx_on_stop)
 void __cfxOnStop()
 {
         fxw_internal::cleanupCoroutines();
+        fx::detail::exportRefCache().clear();
         if (auto* c = fxw_internal::currentContext())
         {
                 for (auto& [cookie, hostRef] : c->stateBagHandlerRefs)
