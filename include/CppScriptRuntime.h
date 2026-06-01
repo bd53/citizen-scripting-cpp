@@ -2476,17 +2476,17 @@ inline void onCommand(const std::string& command, CommandHandler h)
 namespace fx
 {
 
-inline void performHttpRequest(const std::string& url, HttpCallback cb, const std::string& method = "GET", const std::string& data = "", const std::string& headers = "{}")
+inline void performHttpRequest(const std::string& url, HttpCallback cb, const std::string& method = "GET", const std::string& data = "", std::initializer_list<std::pair<std::string, std::string>> headers = {})
 {
-        std::string safeHeaders = "{}";
+        std::string headersJson = "{}";
+        if (headers.size() > 0)
         {
-                json::detail::Parser p{ headers, 0, false };
-                auto v = p.parseValue();
-                p.skipWs();
-                if (!p.error && p.pos == headers.size() && v.kind == fxw_internal::Value::Kind::Object)
-                        safeHeaders = headers;
+                json::JsonObj obj;
+                for (auto& [k, v] : headers)
+                        obj.set(k, v);
+                headersJson = obj.build();
         }
-        std::string payload = "{\"url\":" + json::quote(url) + ",\"method\":" + json::quote(method) + ",\"data\":" + json::quote(data) + ",\"headers\":" + safeHeaders + "}";
+        std::string payload = "{\"url\":" + json::quote(url) + ",\"method\":" + json::quote(method) + ",\"data\":" + json::quote(data) + ",\"headers\":" + headersJson + "}";
         auto ctx = invokeNative(HashString("PERFORM_HTTP_REQUEST_INTERNAL"), { NativeArg::ptr(payload.c_str()), NativeArg(static_cast<int32_t>(payload.size())) }, 1);
         int32_t token = static_cast<int32_t>(ctx.args[0]);
         if (token == -1)
