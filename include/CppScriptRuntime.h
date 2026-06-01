@@ -2344,6 +2344,7 @@ inline void setPlayerState(int serverId, const std::string& key, const json::Val
 
 inline void setEntityState(int netId, const std::string& key, const json::Value& value, bool replicated = true)
 {
+        invokeNative(HashString("ENSURE_ENTITY_STATE_BAG"), { NativeArg(netId) });
         setStateBagValue("entity:" + std::to_string(netId), key, value, replicated);
 }
 
@@ -2368,6 +2369,7 @@ inline json::Value getPlayerState(int serverId, const std::string& key)
 
 inline json::Value getEntityState(int netId, const std::string& key)
 {
+        invokeNative(HashString("ENSURE_ENTITY_STATE_BAG"), { NativeArg(netId) });
         return getStateBagValue("entity:" + std::to_string(netId), key);
 }
 
@@ -2571,7 +2573,7 @@ inline void onCommand(const std::string& command, CommandHandler h)
 namespace fx
 {
 
-inline void performHttpRequest(const std::string& url, HttpCallback cb, const std::string& method = "GET", const std::string& data = "", std::initializer_list<std::pair<std::string, std::string>> headers = {})
+inline void performHttpRequest(const std::string& url, HttpCallback cb, const std::string& method = "GET", const std::string& data = "", std::initializer_list<std::pair<std::string, std::string>> headers = {}, bool followLocation = true)
 {
         std::string headersJson = "{}";
         if (headers.size() > 0)
@@ -2581,7 +2583,7 @@ inline void performHttpRequest(const std::string& url, HttpCallback cb, const st
                         obj.set(k, v);
                 headersJson = obj.build();
         }
-        std::string payload = "{\"url\":" + json::quote(url) + ",\"method\":" + json::quote(method) + ",\"data\":" + json::quote(data) + ",\"headers\":" + headersJson + "}";
+        std::string payload = "{\"url\":" + json::quote(url) + ",\"method\":" + json::quote(method) + ",\"data\":" + json::quote(data) + ",\"headers\":" + headersJson + ",\"followLocation\":" + (followLocation ? "true" : "false") + "}";
         auto ctx = invokeNative(HashString("PERFORM_HTTP_REQUEST_INTERNAL"), { NativeArg::ptr(payload.c_str()), NativeArg(static_cast<int32_t>(payload.size())) }, 1);
         int32_t token = static_cast<int32_t>(ctx.args[0]);
         if (token == -1)
