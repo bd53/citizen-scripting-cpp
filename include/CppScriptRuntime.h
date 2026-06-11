@@ -2138,7 +2138,10 @@ inline int32_t onResourceStop(F&& handler)
         });
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgcc-compat"
 template<typename... TArgs>
+__attribute__((format(printf, 1, 2)))
 inline void trace(const char* fmt, TArgs&&... args)
 {
         static_assert((... && (std::is_trivially_copyable_v<std::decay_t<TArgs>>)), "fx::trace arguments must be trivially copyable (use .c_str() for std::string)");
@@ -2171,6 +2174,7 @@ inline void traceStr(const std::string& msg)
 }
 
 template<typename... TArgs>
+__attribute__((format(printf, 1, 2)))
 inline void traceLn(const char* fmt, TArgs&&... args)
 {
         static_assert((... && (std::is_trivially_copyable_v<std::decay_t<TArgs>>)), "fx::traceLn arguments must be trivially copyable (use .c_str() for std::string)");
@@ -2217,6 +2221,7 @@ inline void traceLn(const char* fmt, TArgs&&... args)
                 __cfxTrace(buf.data(), static_cast<uint32_t>(buf.size()));
         }
 }
+#pragma clang diagnostic pop
 
 inline int32_t onTick(TickHandler h)
 {

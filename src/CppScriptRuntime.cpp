@@ -31,7 +31,7 @@ static constexpr uint32_t WORKER_RESULT_BUF_SIZE = 65536;
 static constexpr int WORKER_SHUTDOWN_ATTEMPTS = 50;
 static constexpr int WORKER_SHUTDOWN_INTERVAL_MS = 100;
 static constexpr size_t MAX_BOOKMARKS_PER_RESOURCE = 1024;
-static constexpr size_t MIN_NATIVE_PTR_BOUNDS = 8;
+static constexpr size_t MIN_NATIVE_PTR_BOUNDS = 4096;
 
 static std::string GetResourcePath(IScriptHost* host)
 {
