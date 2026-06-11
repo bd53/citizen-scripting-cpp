@@ -1843,12 +1843,14 @@ inline NativeCtx invokeNative(uint64_t hash, std::initializer_list<NativeArg> ar
 {
         NativeCtx ctx{ };
         ctx.hash = hash;
-        ctx.numArgs = static_cast<uint32_t>(args.size());
+        ctx.numArgs = static_cast<uint32_t>(args.size() > 32 ? 32 : args.size());
         ctx.numResults = numResults;
         ctx.resultPtrMask = resultPtrMask;
         uint32_t i = 0;
         for (const auto& a : args)
         {
+                if (i >= 32)
+                        break;
                 ctx.args[i] = a.value;
                 if (a.isPtr)
                         ctx.ptrMask |= (1u << i);
@@ -1928,6 +1930,7 @@ namespace detail
 template<typename... TArgs>
 inline NativeCtx invokeCtx(uint64_t hash, TArgs&&... args)
 {
+        static_assert(sizeof...(TArgs) <= 32, "32 arguments max");
         NativeCtx ctx{ };
         ctx.hash = hash;
         ctx.numArgs = static_cast<uint32_t>(sizeof...(args));
@@ -2576,7 +2579,12 @@ inline void callExportAsync(const std::string& resource, const std::string& name
 inline void onCommand(const std::string& command, CommandHandler h)
 {
         if (auto* c = fxw_internal::currentContext())
-                c->commands[command].push_back(h);
+        {
+                auto& handlers = c->commands[command];
+                handlers.push_back(h);
+                if (handlers.size() > 1)
+                        return;
+        }
         std::string cbRef = detail::createCanonicalRef([command](const uint8_t* args, uint32_t argsSize) -> std::vector<uint8_t>
         {
                 auto decoded = fxw_internal::decode(args, argsSize);
