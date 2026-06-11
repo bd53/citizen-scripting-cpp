@@ -480,7 +480,22 @@ inline ProcessResult spawnProcess(const std::string& command, size_t maxOutputBy
                 if (ret <= 0)
                 {
                         if (waitpid(pid, &wstatus, WNOHANG) != 0)
+                        {
+                                while (!outputCapped)
+                                {
+                                        ssize_t dn = read(pipefd[0], buf, sizeof(buf));
+                                        if (dn < 0 && errno == EINTR)
+                                                continue;
+                                        if (dn <= 0)
+                                                break;
+                                        size_t avail = maxOutputBytes > result.output.size() ? maxOutputBytes - result.output.size() : 0;
+                                        size_t toAppend = static_cast<size_t>(dn) < avail ? static_cast<size_t>(dn) : avail;
+                                        result.output.append(buf, toAppend);
+                                        if (toAppend < static_cast<size_t>(dn))
+                                                outputCapped = true;
+                                }
                                 break;
+                        }
                         if (ret == 0)
                                 continue;
                         break;
@@ -511,10 +526,6 @@ inline ProcessResult spawnProcess(const std::string& command, size_t maxOutputBy
                 if (timedOut || outputCapped)
                         kill(pid, SIGKILL);
                 waitpid(pid, &wstatus, 0);
-        }
-        else if (wp < 0)
-        {
-                wstatus = 0;
         }
         while (!result.output.empty() && result.output.back() == '\n')
                 result.output.pop_back();
