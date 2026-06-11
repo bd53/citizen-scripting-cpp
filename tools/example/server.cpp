@@ -1,4 +1,5 @@
 #include <include/CppScriptRuntime.h>
+#include <cstdlib>
 #include <memory>
 #include <unordered_map>
 
@@ -70,9 +71,10 @@ Server
         {
                 if (source.empty() || source == "0")
                         return;
+                int src = static_cast<int>(std::strtol(source.c_str(), nullptr, 10));
                 std::string name = fx::getCurrentResourceName();
-                fx::json::Value info = fx::callExport(name, "getPlayerInfo", { std::stoi(source) });
+                fx::json::Value info = fx::callExport(name, "getPlayerInfo", { src });
                 fx::trace("[fx::addExport] %s\n", info.asStr("failed").c_str());
-                fx::callExport("fwa", "SendChatMessage", { std::stoi(source), "^#f0a0e4[INFO] ^#ffffffHello from ^#f0a0e4C++^#ffffff!" });
+                fx::callExport("fwa", "SendChatMessage", { src, "^#f0a0e4[INFO] ^#ffffffHello from ^#f0a0e4C++^#ffffff!" });
         });
 }
