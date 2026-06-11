@@ -27,7 +27,7 @@ static std::unordered_set<int32_t> s_activeInstanceIds;
 
 static constexpr int64_t WASM_MEMORY_LIMIT = 256 * 1024 * 1024;
 static constexpr uint64_t WASM_FUEL_AMOUNT = 1000000000ULL;
-static constexpr uint32_t WORKER_RESULT_BUF_SIZE = 65536;
+static constexpr uint32_t RESULT_BUF_SIZE = 65536;
 static constexpr int WORKER_SHUTDOWN_ATTEMPTS = 50;
 static constexpr int WORKER_SHUTDOWN_INTERVAL_MS = 100;
 static constexpr size_t MAX_BOOKMARKS_PER_RESOURCE = 1024;
@@ -973,7 +973,7 @@ static void RunWorker(std::shared_ptr<CppScriptRuntime::WorkerState> state, wasm
                                 memcpy(wbase + inputPtr, inputData.data(), inputData.size());
                 }
         }
-        constexpr uint32_t resultBufSize = WORKER_RESULT_BUF_SIZE;
+        constexpr uint32_t resultBufSize = RESULT_BUF_SIZE;
         uint32_t resultPtr = workerAlloc(resultBufSize);
         wasmtime_val_t callArgs[4] = {
                 I32Val(static_cast<int32_t>(inputPtr)),
@@ -1344,7 +1344,7 @@ bool CppScriptRuntime::callInvokeRef(uint32_t callbackId, const char* argsSerial
         if (argsSize > 0)
                 memcpy(base + argsPtr, argsSerialized, argsSize);
         static constexpr uint32_t MAX_REF_RESULT_SIZE = 16u * 1024u * 1024u;
-        uint32_t resultBufMax = WORKER_RESULT_BUF_SIZE;
+        uint32_t resultBufMax = RESULT_BUF_SIZE;
         uint32_t resultPtr = wasmAlloc(resultBufMax);
         if (!resultPtr)
         {

@@ -1355,7 +1355,10 @@ inline void stringifyTo(std::string& out, const Value& v)
                                         out += ',';
                                 out += quote(v.keys[i]);
                                 out += ':';
-                                stringifyTo(out, v.children[i]);
+                                if (i < v.children.size())
+                                        stringifyTo(out, v.children[i]);
+                                else
+                                        out += "null";
                         }
                         out += '}';
                         break;
